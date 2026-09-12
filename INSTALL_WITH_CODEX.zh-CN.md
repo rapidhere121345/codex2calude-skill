@@ -1,48 +1,39 @@
 # 交给另一个 Codex 完成安装
 
-发送前，owner 必须先给 partner 授予本私有仓库的 Read 权限，并等 partner
-确认自己能打开仓库 URL；确认后再把下面整段文字连同 URL 发给对方的 Codex：
+发送前，Owner 需要完成三件事：确认这种共享访问符合 Anthropic 的账号条款
+且 Partner 位于支持地区；给 Partner 授予本私有仓库的 Read 权限；生成一把只
+用于本 MCP 的 Partner 密钥，并提前把公钥绑定到服务器的 `partner`
+forced-command。私钥是该 MCP 的 bearer credential，只能通过受控的一对一渠道
+发送，绝不能放进 Git、公开链接或群聊。
+
+把密钥附件和下面整段话一起交给 Partner：
 
 ```text
-请使用 $skill-installer 从
-https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/claude-research
-安装 claude-research Skill。安装后遵循 SKILL.md 的 First-time client setup，
-运行 setup_client.py 完成本机配置。只能向我显示新生成的 .pub 公钥，绝对不要
-读取、显示或上传私钥。输出公钥后等待服务器管理员确认授权，再运行 --verify；
-验证成功（服务器必须提供且只提供七个 claude 工具）后提醒我重启 Codex。
+请使用 $skill-installer 从 https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/claude-research 安装 claude-research Skill。不要读取、展示、上传或转发我附带的私钥内容。安装后在 Skill 目录运行 python3 scripts/setup_client.py --principal partner --import-key <我附带的私钥绝对路径> --verify。脚本必须显示 pre-authorized import，并验证服务器恰好提供七个 claude 工具；成功后通过系统安全删除机制删除交付私钥和压缩包，重启 Codex，再调用 $claude-research。遇到已有密钥、host pin、MCP 配置冲突或主机指纹不符时立即停止，不要覆盖或绕过校验。
 ```
 
-## 推荐安装路径：$skill-installer
+## 预期自动流程
 
-上面的提示词会使用 `$skill-installer`。它会利用对方已有的 GitHub/Git
-权限安装私有仓库中的 Skill，不需要 owner 交出任何凭证。
+`$skill-installer` 使用 Partner 自己的 GitHub/Git 权限读取私有仓库，不需要
+Owner 交出 GitHub 凭证。Skill 中的 `setup_client.py` 会：
 
-## 安全 fallback
+1. 要求 Python 3.11 或更新版本以及 OpenSSH 客户端。
+2. 检查交付私钥是权限为 0600 的无口令 ED25519 常规文件。
+3. 将它导入 Partner 本机的专用路径，并在本机派生公钥；不输出私钥。
+4. 固定服务器 ED25519 主机密钥和指纹。
+5. 仅在不存在冲突时更新 Codex 的 `claude_research` MCP 配置。
+6. 通过公网 SSH 做真实 MCP 握手，确认登录状态与七个工具。
 
-如果 `$skill-installer` 不可用，但对方有本仓库的 Git 读取权限，可以：
+脚本故意保留交付源，直到 `--verify` 成功。成功后应删除源文件和交付压缩包；
+导入到 `~/.ssh` 的专用工作密钥需要保留，删除它会让 MCP 失效。
 
-1. 使用自己的 Git 凭证 clone 本仓库。
-2. 只把 `skills/claude-research` 安装到
-   `$CODEX_HOME/skills/claude-research`，不要安装或复制无关文件。
-3. 从安装后的 Skill 目录运行 `python3 scripts/setup_client.py`。
+## Fallback
 
-如果对方也没有 GitHub CLI 或 `$skill-installer`，owner 可以通过私密渠道
-只发送 `skills/claude-research` 这个目录，例如放入对方已可用的加密/受控
-传输方式；不要用公开链接分发。无论采用哪种方式，都绝不发送任何私钥、
-token 或仓库其他机密。
+如果 `$skill-installer` 不可用，但 Partner 有仓库读取权限，可以 clone 仓库，
+只把 `skills/claude-research` 安装到
+`$CODEX_HOME/skills/claude-research`，再运行相同命令。如果没有交付密钥，
+`python3 scripts/setup_client.py` 会生成新密钥并只显示 `.pub`；此 fallback
+仍需要把公钥交给 Owner 授权后再运行 `--verify`。
 
-## 对方需要做什么
-
-对方只需要：
-
-1. 把上述指令交给自己的 Codex。
-2. 将 Codex 输出的单行 `.pub` 公钥发给服务器管理员。
-3. 管理员确认授权后告诉 Codex继续验证。
-4. 验证通过（工具清单恰好为七个）后重启 Codex，再使用
-   `$claude-research`。
-
-私钥始终保留在对方电脑。不要通过聊天、网盘、邮件或仓库传递私钥。
-
-唯一无法自动化的步骤是服务器管理员把对方新生成的 `.pub` 公钥绑定到
-partner forced-command。除此之外不要增加公网自助注册，也不要改变服务端
-安全边界。
+不要增加公网自助注册，不要复用 Owner 或通用登录密钥，也不要为了省一步而
+关闭 host pin、`IdentitiesOnly` 或 forced-command 限制。

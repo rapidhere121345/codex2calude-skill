@@ -124,13 +124,28 @@ def _sanitize_error(stderr: str) -> str:
 
 
 def child_environment() -> dict[str, str]:
-    allowed = {"HOME", "PATH", "LANG", "LC_ALL", "TERM", "NO_COLOR"}
+    allowed = {
+        "HOME",
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "NO_COLOR",
+        "CLAUDE_MCP_STATUSLINE_OBSERVATION",
+    }
     result = {
         key: value
         for key, value in os.environ.items()
-        if key in allowed or key.startswith(("LC_", "XDG_"))
+        if key in allowed
     }
     result["NO_COLOR"] = "1"
+    result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+    result["CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL"] = "1"
+    result["DISABLE_AUTOUPDATER"] = "1"
+    result["DISABLE_ERROR_REPORTING"] = "1"
+    result["DISABLE_FEEDBACK_COMMAND"] = "1"
+    result["DISABLE_TELEMETRY"] = "1"
+    result["DO_NOT_TRACK"] = "1"
+    result["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] = "1"
     return result
 
 

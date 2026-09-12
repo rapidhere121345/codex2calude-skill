@@ -12,7 +12,7 @@ args = [
   "-o", "ConnectTimeout=10",
   "-o", "ServerAliveInterval=30",
   "-o", "ServerAliveCountMax=2",
-  "ubuntu@44.255.229.140",
+  "claudemcp@44.255.229.140",
 ]
 startup_timeout_sec = 20
 tool_timeout_sec = 720

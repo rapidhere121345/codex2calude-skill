@@ -28,7 +28,8 @@ import tomllib
 
 HOST = "44.255.229.140"
 SSH_PORT = "22022"
-SSH_USER = "ubuntu"
+SSH_USER = "claudemcp"
+LEGACY_SSH_USER = "ubuntu"
 KNOWN_HOSTS_LINE = (
     "[44.255.229.140]:22022 ssh-ed25519 "
     "AAAAC3NzaC1lZDI1NTE5AAAAIOposESz9sift7F1deDCPoJZucWQ69k1Ln4b1auELh5s"
@@ -92,7 +93,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--key-path",
         type=absolute_path,
-        help="Private key path (default: ~/.ssh/claude_mcp_PRINCIPAL_ed25519).",
+        help="Destination or already-installed private key (default: ~/.ssh/claude_mcp_PRINCIPAL_ed25519).",
+    )
+    parser.add_argument(
+        "--import-key",
+        type=absolute_path,
+        help="Import a delivered, MCP-dedicated private key into --key-path.",
     )
     parser.add_argument(
         "--known-hosts-path",
@@ -156,7 +162,9 @@ def require_regular_file(path: Path, *, reject_symlink: bool = True) -> None:
         raise SetupError(f"文件权限过宽（需要仅所有者可读写）: {path}")
 
 
-def ssh_args(key_path: Path, known_hosts_path: Path) -> list[str]:
+def ssh_args(
+    key_path: Path, known_hosts_path: Path, *, ssh_user: str = SSH_USER
+) -> list[str]:
     return [
         "-T",
         "-p",
@@ -177,7 +185,7 @@ def ssh_args(key_path: Path, known_hosts_path: Path) -> list[str]:
         "ServerAliveInterval=30",
         "-o",
         "ServerAliveCountMax=2",
-        f"{SSH_USER}@{HOST}",
+        f"{ssh_user}@{HOST}",
     ]
 
 
@@ -185,10 +193,12 @@ def expected_config(
     key_path: Path,
     known_hosts_path: Path,
     tools: tuple[str, ...] = TOOLS,
+    *,
+    ssh_user: str = SSH_USER,
 ) -> dict[str, Any]:
     return {
         "command": "ssh",
-        "args": ssh_args(key_path, known_hosts_path),
+        "args": ssh_args(key_path, known_hosts_path, ssh_user=ssh_user),
         "startup_timeout_sec": 20,
         "tool_timeout_sec": 720,
         "enabled_tools": list(tools),
@@ -267,6 +277,56 @@ def prepare_key(key_path: Path, ssh_keygen: str) -> str:
     return validate_public_key(public_key_path, ssh_keygen)
 
 
+def import_delivered_key(source: Path, destination: Path, ssh_keygen: str) -> str:
+    """Copy a delivered MCP-dedicated key without printing or retaining paths."""
+
+    source = absolute_path(str(source))
+    destination = absolute_path(str(destination))
+    if source == destination:
+        raise SetupError("导入源不能等于目标路径")
+    if destination.exists() or destination.is_symlink():
+        raise SetupError("目标专用私钥已存在；为避免覆盖已停止")
+    derived_public = Path(f"{destination}.pub")
+    if derived_public.exists() or derived_public.is_symlink():
+        raise SetupError("目标公钥已存在；为避免覆盖已停止")
+    require_regular_file(source)
+    ensure_private_directory(destination.parent)
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        raise SetupError("无法读取交付私钥") from exc
+    if not raw or len(raw) > 1_048_576:
+        raise SetupError("交付私钥格式或大小无效")
+    fingerprint = run_tool([ssh_keygen, "-lf", str(source)])
+    if fingerprint.returncode != 0 or "ED25519" not in fingerprint.stdout:
+        raise SetupError("交付私钥不是有效的无口令 ED25519 私钥")
+    fields = fingerprint.stdout.split()
+    if len(fields) < 2 or not FINGERPRINT_RE.fullmatch(fields[1]):
+        raise SetupError("无法解析交付私钥指纹")
+    probe = run_tool([ssh_keygen, "-y", "-P", "", "-f", str(source)])
+    derived_fields = probe.stdout.strip().split()
+    if (
+        probe.returncode != 0
+        or len(derived_fields) < 2
+        or derived_fields[0] != "ssh-ed25519"
+    ):
+        raise SetupError("交付私钥需要口令或无法派生公钥")
+    derived_key = " ".join(derived_fields[:2]) + "\n"
+    try:
+        atomic_create(destination, raw, mode=0o600)
+        atomic_create(derived_public, derived_key.encode("ascii"), mode=0o600)
+        return validate_public_key(derived_public, ssh_keygen)
+    except Exception:
+        # Both targets were absent on entry and the parent is private. Roll back
+        # a partial import so a retry cannot be mistaken for a verified key.
+        for created in (derived_public, destination):
+            try:
+                created.unlink()
+            except FileNotFoundError:
+                pass
+        raise
+
+
 def atomic_create(path: Path, content: bytes, *, mode: int = 0o600) -> None:
     ensure_private_directory(path.parent)
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -332,7 +392,22 @@ def validate_config(
     section = servers["claude_research"]
     if section == expected:
         return "current", raw
-    if section == expected_config(key_path, known_hosts_path, LEGACY_TOOLS):
+    known_generated_configs = (
+        expected_config(key_path, known_hosts_path, LEGACY_TOOLS),
+        expected_config(
+            key_path,
+            known_hosts_path,
+            TOOLS,
+            ssh_user=LEGACY_SSH_USER,
+        ),
+        expected_config(
+            key_path,
+            known_hosts_path,
+            LEGACY_TOOLS,
+            ssh_user=LEGACY_SSH_USER,
+        ),
+    )
+    if section in known_generated_configs:
         return "legacy", raw
     raise SetupError(
         "已有 [mcp_servers.claude_research] 与期望配置不完全一致；为避免覆盖已停止"
@@ -381,12 +456,8 @@ def migrate_legacy_config(
         if next_header is not None
         else len(text)
     )
-    section = text[start:end]
-    legacy = enabled_tools_assignment(LEGACY_TOOLS)
-    if section.count(legacy) != 1:
-        raise SetupError("旧版工具清单不是安装器生成的标准格式；已拒绝自动迁移")
-    replacement = enabled_tools_assignment(TOOLS)
-    updated = text[:start] + section.replace(legacy, replacement, 1) + text[end:]
+    replacement = config_block(key_path, known_hosts_path).lstrip("\n")
+    updated = text[:start] + replacement + text[end:]
     try:
         parsed = tomllib.loads(updated)
     except tomllib.TOMLDecodeError as exc:
@@ -428,7 +499,8 @@ def prepare(
     codex_home: Path,
     key_path: Path,
     known_hosts_path: Path,
-) -> tuple[str, str, str, str]:
+    import_key: Path | None = None,
+) -> tuple[str, str, str, str, str]:
     ssh, ssh_keygen = require_tools()
     ensure_private_directory(codex_home)
 
@@ -441,7 +513,13 @@ def prepare(
         require_regular_file(known_hosts_path)
         validate_known_hosts(known_hosts_path, ssh_keygen)
 
-    fingerprint = prepare_key(key_path, ssh_keygen)
+    imported = import_key is not None
+    mode = "imported" if imported else ("pre_authorized" if key_path.exists() else "generated")
+    fingerprint = (
+        import_delivered_key(import_key, key_path, ssh_keygen)
+        if imported
+        else prepare_key(key_path, ssh_keygen)
+    )
     if not known_hosts_path.exists():
         atomic_create(
             known_hosts_path, (KNOWN_HOSTS_LINE + "\n").encode("utf-8")
@@ -453,7 +531,7 @@ def prepare(
         public_key = Path(f"{key_path}.pub").read_text(encoding="utf-8").strip()
     except (OSError, UnicodeError) as exc:
         raise SetupError("无法读取公钥") from exc
-    return ssh, ssh_keygen, public_key, fingerprint
+    return ssh, ssh_keygen, public_key, fingerprint, mode
 
 
 def rpc_messages() -> tuple[dict[str, Any], ...]:
@@ -587,7 +665,7 @@ def check_responses(stdout: str, principal: str) -> None:
     quota = status.get("opus_quota")
     if (
         not isinstance(quota, dict)
-        or quota.get("source") != "claude_code_oauth_usage"
+        or quota.get("source") != "claude_code_statusline"
         or not isinstance(quota.get("available"), bool)
     ):
         raise VerifyError("claude_status 未提供有效的 Opus 额度状态")
@@ -753,14 +831,28 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        ssh, _ssh_keygen, public_key, fingerprint = prepare(
+        ssh, _ssh_keygen, public_key, fingerprint, mode = prepare(
             principal=args.principal,
             codex_home=codex_home,
             key_path=key_path,
             known_hosts_path=known_hosts_path,
+            import_key=args.import_key,
         )
-        print("公钥:")
-        print(public_key)
+        labels = {
+            "imported": "pre-authorized import",
+            "pre_authorized": "pre-authorized",
+            "generated": "generated fallback",
+        }
+        print(f"密钥模式: {labels[mode]}")
+        if mode == "imported":
+            print("已导入 Owner 预授权的 MCP 专用密钥（未输出私钥）。")
+        elif mode == "pre_authorized":
+            print("检测到已就位的 MCP 专用密钥；假定 Owner 已预授权其公钥。")
+        else:
+            print("已生成新的 MCP 专用密钥 fallback。")
+        if mode == "generated":
+            print("公钥:")
+            print(public_key)
         print(f"公钥指纹: {fingerprint}")
         if args.verify:
             verify(
@@ -771,6 +863,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             print("verify: 通过")
             print("服务器已授权该公钥，MCP 状态正常。")
+            if args.import_key:
+                print(f"导入源文件保留在: {args.import_key}")
+                print("确认连接可用后，请通过系统安全删除机制删除该交付私钥。")
         else:
             print("请管理员授权上述公钥。")
         return 0

@@ -7,7 +7,7 @@ Tailscale dependency.
 The bridge exposes exactly seven tools:
 
 - `claude_status()` — sanitized CLI, login, subscription, model-policy, and
-  Opus-applicable plan-usage status.
+  best-effort Opus quota status.
 - `claude_once(...)` — one independent query.
 - `claude_start(...)` — start a logical task with an optional human title and
   return an opaque `conversation_id`.
@@ -22,32 +22,37 @@ The bridge exposes exactly seven tools:
 ## Hand this repository to another Codex
 
 Before sending the repository URL, the owner must grant the partner Read access
-to the private repository. Wait until the partner confirms that they can open
-the URL, then send this prompt:
+to the private repository and pre-authorize a dedicated partner key. Deliver
+the passphrase-less private key only through a controlled one-to-one channel;
+it is a bearer credential for this MCP endpoint. Then send this prompt together
+with the key file:
 
 ```text
 请使用 $skill-installer 从
 https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/claude-research
-安装 claude-research Skill。安装后遵循 SKILL.md 的 First-time client setup，
-运行 setup_client.py 完成本机配置。只能向我显示新生成的 .pub 公钥，绝对不要
-读取、显示或上传私钥。输出公钥后等待服务器管理员确认授权，再运行 --verify；
-验证成功后提醒我重启 Codex。
+安装 claude-research Skill。不要读取、展示、上传或转发我附带的私钥内容。
+安装后在 Skill 目录运行 python3 scripts/setup_client.py --principal partner
+--import-key <我附带的私钥绝对路径> --verify。脚本必须显示 pre-authorized
+import 且验证恰好七个 claude 工具；成功后通过系统安全删除机制删除交付私钥
+和压缩包，并提醒我重启 Codex。遇到已有密钥、host pin 或 MCP 配置冲突时停止，
+不要覆盖或绕过校验。
 ```
 
-The partner needs read access to this GitHub repository if it is private. The
-setup is otherwise local and does not require Tailscale. One deliberate
-out-of-band step remains: the server administrator must add the generated public
-key. There is no public self-enrollment endpoint.
+The setup is otherwise local and does not require Tailscale. `--import-key`
+copies the key to the dedicated destination with mode 0600, rejects symlinks
+and overwrites, derives and validates its public key, and never prints the
+private key. The delivery copy is intentionally retained until verification
+succeeds, after which it should be securely deleted. There is no public
+self-enrollment endpoint.
 
 Prefer the `$skill-installer` path shown above. If it is unavailable, a partner
 with Git repository access may clone this repository and copy only
 `skills/claude-research` into `$CODEX_HOME/skills/claude-research`. If the
 partner has neither GitHub CLI nor `$skill-installer`, the owner may send that
-skill directory alone through a private channel. Never send private keys or
-other repository secrets. The only step that cannot be automated is for the
-server administrator to bind the generated `.pub` key to the partner's
-forced-command entry; do not add public self-enrollment or change the server's
-security boundary.
+skill directory alone through a private channel. Do not include credentials or
+unrelated repository files. Without a pre-authorized delivered key, the
+generated-key fallback prints only a `.pub` key and deliberately stops for
+administrator authorization.
 
 ## Conversation and model policy
 
@@ -76,17 +81,21 @@ it, by adding this entry to `CLAUDE_MCP_MODELS`:
 Do not add Fable to the allowlist merely to probe entitlement: non-interactive
 Claude Code calls can consume usage before reporting an account-level problem.
 
-`claude_status.opus_quota` makes a best-effort read from the same authenticated
-plan-usage endpoint used by Claude Code, without sending a model request. It is
-available only for the active claude.ai OAuth login. `five_hour` and
-`seven_day` are the shared subscription windows that apply while using Opus;
-`seven_day_opus` is an additional Opus-specific weekly window only when Claude
-reports one. Each available window contains used/remaining percentages and its
-reset time. A missing Opus-specific window remains `null`, never an invented
-100% remainder. Owner and partner see the same account-level windows, not
-per-principal allowances. A small sanitized cache avoids repeated endpoint
-calls and may be returned as stale for up to one hour during a transient
-refresh failure.
+`claude_status.opus_quota` reports only an observation emitted through Claude
+Code's documented [statusline `rate_limits`](https://code.claude.com/docs/en/statusline)
+field. The capture helper discards
+the rest of the statusline payload and stores only `five_hour`, `seven_day`, and
+an observation time. The bridge never reads `~/.claude/.credentials.json`,
+never calls an undocumented usage endpoint, and never sends a model request to
+obtain quota data. Each official window is independently optional. A valid
+window contains used/remaining percentages and its reset time; `source`,
+`observed_at`, `stale`, and `age_seconds` make provenance explicit.
+
+Claude Code may not invoke a configured statusline during non-interactive `-p`
+runs. Therefore `available: false` is an expected safe result until a recent
+interactive statusline observation exists. It means unknown, not zero usage or
+unlimited capacity; use the returned `https://claude.ai/usage` URL for the
+manual check.
 
 ## Security boundary
 
@@ -105,46 +114,75 @@ refresh failure.
 - SQLite enforces principal ownership and rolling per-principal quotas. A
   process-wide flock limits shared-account concurrency.
 - Responses and diagnostics are bounded. Raw Claude stderr is not returned.
-- Quota status reads only the server-owned OAuth access token, sends it only to
-  the fixed Anthropic HTTPS endpoint, and never returns, logs, or caches the
-  token or raw usage response. If credentials or usage data cannot be safely
-  validated, quota is reported unavailable rather than guessed.
-- The shared Claude login remains in `/home/ubuntu`; neither user receives its
-  OAuth material. The state directory must stay mode `0700`.
+- Quota status never reads OAuth credentials and never calls an undocumented
+  usage endpoint. It only reads the bounded, owner-controlled sanitized
+  statusline observation, and reports unavailable rather than guessing.
+- The Claude login and state live under the dedicated, password-locked
+  `claudemcp` service account in `/var/lib/claude-mcp`; neither SSH principal
+  receives its OAuth material or a server shell.
+- The root-owned runtime is pinned, and Claude children receive an exact
+  environment allowlist with SSH, proxy, API-key, desktop-session, and client
+  variables removed. Claude Code's documented
+  [privacy environment controls](https://code.claude.com/docs/en/env-vars)
+  disable nonessential telemetry, feedback, crash reporting, marketplace
+  auto-install, and auto-update traffic.
+- Only MCP/Claude traffic originates from the VPS. A partner's source address
+  is visible to the VPS SSH daemon and its logs, but is not forwarded in the
+  Claude child environment. Prompts, pasted identifiers, and URLs can still
+  disclose information by content, so callers must keep them scoped.
 
 Web content is still untrusted. Prompt injection can influence research output,
 so important findings should be verified.
+
+## Account and policy boundary
+
+Technical isolation does not grant permission to share a consumer Claude
+account. Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
+prohibit sharing login details or making an account available to another
+person, and use must come from a
+[supported location](https://www.anthropic.com/supported-countries). Keep the
+partner key disabled unless the account arrangement and every user's location
+are covered by an Anthropic-supported organization, team, API, or written
+authorization. This repository cannot make consumer-account sharing
+policy-compliant or ban-safe.
 
 ## Install on the VPS
 
 The expected production paths are:
 
 ```text
-/opt/claude-research-mcp
-/home/ubuntu/.local/share/claude-research-mcp
+/opt/claude-research-mcp/releases/<release>
+/opt/claude-research-mcp/current -> releases/<release>
+/opt/claude-code/2.1.236/claude
+/var/lib/claude-mcp/.claude
+/var/lib/claude-mcp/research
 /etc/ssh/authorized_keys/claude-mcp
 /etc/ssh/sshd_config.claude-mcp
 ```
 
-After copying this project to `/opt/claude-research-mcp`:
+Create a password-locked service account with no sudo membership. Its shell is
+needed only because OpenSSH executes the key's forced command through it:
 
 ```sh
-sudo chown -R root:root /opt/claude-research-mcp
-sudo chmod 0755 /opt/claude-research-mcp/scripts/*.sh
-sudo /opt/claude-research-mcp/scripts/install.sh
-sudo install -d -m 0700 -o ubuntu -g ubuntu /home/ubuntu/.local/share/claude-research-mcp
+sudo useradd --system --create-home --home-dir /var/lib/claude-mcp --shell /bin/sh claudemcp
+sudo passwd --lock claudemcp
+sudo install -d -m 0700 -o claudemcp -g claudemcp /var/lib/claude-mcp/research
 ```
 
-Production must retain Claude transcripts for 365 days. `install.sh` may run as
-root or for local development, so it intentionally does not mutate the
-unprivileged user's Claude settings. On the VPS, apply this idempotent,
-atomic update as `ubuntu`; it preserves every unrelated settings key:
+Copy each release into a new root-owned directory, build its `.venv`, and move
+the `current` symlink only after tests pass. Install Claude Code from its
+official distribution at the pinned root-owned path shown above; do not let the
+service account replace that binary. Authenticate Claude interactively as
+`claudemcp` from a trusted administrative console, never by distributing its
+OAuth files.
+
+Production retains Claude transcripts for 365 days. Configure the sanitized
+statusline capture at the same time; preserve every unrelated settings key:
 
 ```sh
-sudo -u ubuntu -H python3 - <<'PY'
+sudo -u claudemcp -H python3 - <<'PY'
 import json
 import os
-import stat
 import tempfile
 from pathlib import Path
 
@@ -159,11 +197,11 @@ if path.exists():
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit("settings.json must contain a JSON object")
-if data.get("cleanupPeriodDays") == 365:
-    print("cleanupPeriodDays already equals 365")
-    raise SystemExit(0)
 data["cleanupPeriodDays"] = 365
-mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+data["statusLine"] = {
+    "type": "command",
+    "command": "/opt/claude-research-mcp/current/scripts/capture-statusline-rate-limits.py",
+}
 fd, temporary_name = tempfile.mkstemp(prefix=".settings.json.", dir=path.parent)
 try:
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -171,19 +209,23 @@ try:
         stream.write("\n")
         stream.flush()
         os.fsync(stream.fileno())
-    os.chmod(temporary_name, mode)
+    os.chmod(temporary_name, 0o600)
     os.replace(temporary_name, path)
 finally:
     try:
         os.unlink(temporary_name)
     except FileNotFoundError:
         pass
-print("set cleanupPeriodDays=365")
+print("configured retention and sanitized statusline capture")
 PY
 ```
 
+The statusline helper needs `CLAUDE_MCP_STATUSLINE_OBSERVATION` in the
+interactive Claude environment to write a sample. The forced MCP wrapper sets
+it automatically, but non-interactive Claude may not render a statusline.
+
 Install the dedicated SSH daemon configuration only after inserting real public
-keys into `examples/authorized_keys`:
+keys into a private copy of `examples/authorized_keys` (never commit real keys):
 
 ```sh
 sudo install -d -m 0755 -o root -g root /etc/ssh/authorized_keys
@@ -200,18 +242,20 @@ open administrative port 22 publicly for this bridge.
 
 ## Client setup
 
-Each person generates their own key locally and sends only the `.pub` file to
-the server administrator:
+For the painless partner path, the owner creates a dedicated passphrase-less
+ED25519 pair, binds the public half to the `partner` forced command, and sends
+the private delivery copy through a controlled channel. The partner runs:
 
 ```sh
-ssh-keygen -t ed25519 -a 100 -f ~/.ssh/claude_mcp
+python3 scripts/setup_client.py --principal partner \
+  --import-key /absolute/path/to/delivered-private-key --verify
 ```
 
-Use a trusted copy of the VPS ED25519 host public key to create a pinned
-`known_hosts` file; do not approve a changing fingerprint. Copy
-`examples/codex-config.toml` into the relevant Codex config and replace the key
-and known-host paths. The same stdio MCP configuration works in Codex clients
-that share `~/.codex/config.toml`.
+The script pins the VPS host key and adds the exact stdio entry to the Codex
+config. After successful verification, delete the delivery source and restart
+Codex. If no key was delivered, running the script without `--import-key`
+generates a dedicated local pair and prints only the `.pub` fallback for manual
+authorization.
 
 ## Revocation
 

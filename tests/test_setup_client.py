@@ -46,7 +46,7 @@ def tool_mocks(
     def fake_run_tool(command: list[str], *, timeout: int = 20):
         if command[:2] == ["fake-keygen", "-lf"]:
             target = command[2]
-            if target.endswith(".pub"):
+            if target.endswith(".pub") or target.endswith("delivered-key"):
                 return subprocess.CompletedProcess(
                     command,
                     0,
@@ -64,6 +64,8 @@ def tool_mocks(
             key_path.chmod(0o600)
             public_path.write_text(PUBLIC_KEY + "\n")
             return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:2] == ["fake-keygen", "-y"]:
+            return subprocess.CompletedProcess(command, 0, PUBLIC_KEY + "\n", "")
         raise AssertionError(f"unexpected command: {command}")
 
     monkeypatch.setattr(setup, "require_tools", lambda: ("fake-ssh", "fake-keygen"))
@@ -83,6 +85,29 @@ def run(workspace: tuple[Path, Path, Path], *extra: str) -> int:
             str(key_path),
             "--known-hosts-path",
             str(known_hosts_path),
+            *extra,
+        ]
+    )
+
+
+def run_import(
+    workspace: tuple[Path, Path, Path],
+    delivered: Path,
+    *extra: str,
+) -> int:
+    codex_home, key_path, known_hosts_path = workspace
+    return setup.main(
+        [
+            "--principal",
+            "partner",
+            "--codex-home",
+            str(codex_home),
+            "--key-path",
+            str(key_path),
+            "--known-hosts-path",
+            str(known_hosts_path),
+            "--import-key",
+            str(delivered),
             *extra,
         ]
     )
@@ -122,8 +147,9 @@ def mcp_stdout(
                     "models": {"opus": {"cli_supported": True}},
                     "opus_quota": {
                         "available": False,
-                        "source": "claude_code_oauth_usage",
-                        "reason": "usage_endpoint_unavailable",
+                        "source": "claude_code_statusline",
+                        "reason": "statusline_observation_unavailable",
+                        "manual_check_url": "https://claude.ai/usage",
                     },
                 },
             },
@@ -191,6 +217,7 @@ def test_prepare_creates_and_is_idempotent(
     assert PRIVATE_MARKER not in output.encode()
     assert PUBLIC_KEY in output
     assert "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" in output
+    assert "密钥模式: generated fallback" in output
     assert "请管理员授权" in output
     assert key_path.read_bytes() == PRIVATE_MARKER
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
@@ -210,6 +237,95 @@ def test_prepare_creates_and_is_idempotent(
     code = run(workspace)
     assert code == 0
     assert config_path.read_text() == raw
+
+
+def test_preauthorized_existing_key_verifies_without_generation(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, key_path, _ = workspace
+    key_path.write_bytes(PRIVATE_MARKER)
+    key_path.chmod(0o600)
+    Path(f"{key_path}.pub").write_text(PUBLIC_KEY + "\n")
+    before = key_path.read_bytes()
+    mock_verify(monkeypatch, stdout=mcp_stdout())
+
+    code = run(workspace, "--verify")
+    output = capsys.readouterr().out
+
+    assert code == 0
+    assert "密钥模式: pre-authorized" in output
+    assert "已就位的 MCP 专用密钥" in output
+    assert "verify: 通过" in output
+    assert key_path.read_bytes() == before
+    assert PRIVATE_MARKER not in output.encode()
+    assert PUBLIC_KEY not in output
+
+
+def test_imported_delivered_key_verifies_and_preserves_source(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _, key_path, _ = workspace
+    delivered = key_path.parent / "delivered-key"
+    delivered.write_bytes(PRIVATE_MARKER)
+    delivered.chmod(0o600)
+    before = delivered.read_bytes()
+    mock_verify(monkeypatch, stdout=mcp_stdout())
+
+    code = run_import(workspace, delivered, "--verify")
+    output = capsys.readouterr().out
+
+    assert code == 0
+    assert "密钥模式: pre-authorized import" in output
+    assert "已导入 Owner 预授权" in output
+    assert "verify: 通过" in output
+    assert f"导入源文件保留在: {delivered}" in output
+    assert PRIVATE_MARKER not in output.encode()
+    assert PUBLIC_KEY not in output
+    assert key_path.read_bytes() == before
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+    assert Path(f"{key_path}.pub").read_text() == " ".join(PUBLIC_KEY.split()[:2]) + "\n"
+    assert delivered.read_bytes() == before
+
+
+def test_import_rejects_replacement_and_same_path(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+) -> None:
+    _, key_path, _ = workspace
+    delivered = key_path.parent / "delivered-key"
+    delivered.write_bytes(PRIVATE_MARKER)
+    delivered.chmod(0o600)
+    key_path.write_bytes(b"existing")
+    key_path.chmod(0o600)
+
+    assert run_import(workspace, delivered) == 1
+    assert key_path.read_bytes() == b"existing"
+
+    key_path.unlink()
+    assert run_import(workspace, key_path) == 1
+    assert not key_path.exists()
+
+
+def test_import_rejects_orphan_public_key_without_partial_private_copy(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+) -> None:
+    _, key_path, _ = workspace
+    delivered = key_path.parent / "delivered-key"
+    delivered.write_bytes(PRIVATE_MARKER)
+    delivered.chmod(0o600)
+    public_path = Path(f"{key_path}.pub")
+    public_path.write_text("existing-public\n", encoding="utf-8")
+
+    assert run_import(workspace, delivered) == 1
+    assert not key_path.exists()
+    assert public_path.read_text(encoding="utf-8") == "existing-public\n"
 
 
 def test_conflicting_server_section_is_rejected(
@@ -254,6 +370,37 @@ def test_legacy_five_tool_config_is_safely_upgraded(
     assert upgraded.endswith("[notice]\nhide = true\n")
     assert setup.enabled_tools_assignment(setup.LEGACY_TOOLS) not in upgraded
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
+def test_legacy_ubuntu_transport_is_safely_upgraded(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+) -> None:
+    assert run(workspace) == 0
+    codex_home, key_path, known_hosts_path = workspace
+    config_path = codex_home / "config.toml"
+    current = config_path.read_text(encoding="utf-8")
+    legacy = current.replace(
+        f'"{setup.SSH_USER}@{setup.HOST}"',
+        f'"{setup.LEGACY_SSH_USER}@{setup.HOST}"',
+        1,
+    )
+    config_path.write_text(
+        "# preserve-before\n" + legacy + "\n[notice]\nhide = true\n",
+        encoding="utf-8",
+    )
+
+    assert run(workspace) == 0
+    upgraded = config_path.read_text(encoding="utf-8")
+    import tomllib
+
+    parsed = tomllib.loads(upgraded)
+    assert parsed["mcp_servers"]["claude_research"] == setup.expected_config(
+        key_path, known_hosts_path
+    )
+    assert f'"{setup.LEGACY_SSH_USER}@{setup.HOST}"' not in upgraded
+    assert upgraded.startswith("# preserve-before\n")
+    assert upgraded.endswith("[notice]\nhide = true\n")
 
 
 def test_known_hosts_mismatch_fails_closed(
@@ -398,8 +545,9 @@ def test_real_exchange_sequences_requests_without_closing_stdin(tmp_path: Path) 
                             "models": {"opus": {"cli_supported": True}},
                             "opus_quota": {
                                 "available": False,
-                                "source": "claude_code_oauth_usage",
-                                "reason": "usage_endpoint_unavailable",
+                                "source": "claude_code_statusline",
+                                "reason": "statusline_observation_unavailable",
+                                "manual_check_url": "https://claude.ai/usage",
                             },
                         },
                     }

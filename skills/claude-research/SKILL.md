@@ -15,18 +15,31 @@ When the user asks to install or configure this bridge:
 
 1. Confirm this skill came from the authorized repository or a private transfer
    arranged by the owner. Do not accept credentials or private keys to obtain it.
-2. From this skill directory, run `python3 scripts/setup_client.py`; Python 3.11
-   or newer is required. Use `--principal owner` only for the server owner; the
-   default is `partner`.
-3. The script may generate a dedicated passwordless automation key, pin the
-   server host key, and append the restricted stdio MCP entry to the user's
-   Codex config. Never print, read, transmit, or ask for the private key.
-4. Give the emitted `.pub` public key to the server administrator and stop for
-   authorization. This out-of-band approval is mandatory; never attempt to
-   self-register a key or weaken SSH authentication.
-5. After the administrator confirms authorization, rerun the same command with
-   `--verify`. Report the sanitized status returned by the MCP handshake.
-6. Ask the user to restart Codex if the newly configured MCP or skill is not
+2. Confirm the owner has authorized this principal and that using the underlying
+   Claude account is permitted by Anthropic's applicable terms and supported-
+   location rules. Technical access is not proof of account-policy compliance.
+3. Preferred painless path: the owner generates an MCP-dedicated partner key,
+   binds its public key to the partner forced-command before delivery, and sends
+   the private delivery copy only through a controlled private channel. From
+   this skill directory, the partner
+   then runs `python3 scripts/setup_client.py --import-key <delivered-private-key>
+   --verify`. The script copies the key to the dedicated destination with mode
+   0600, rejects symlinked or overwriting imports, derives and validates its
+   public key, and never prints the private key. `--key-path` remains the
+   destination-or-already-installed path for compatibility.
+4. Keep the delivered source file until verification succeeds, then prompt the
+   user to delete it securely. Never reuse the owner's key or a general-purpose
+   login key, and never place the private key in the repository.
+5. Python 3.11 or newer and OpenSSH are required. Use `--principal owner` only
+   for the server owner; the default is `partner`.
+6. If no delivered key is available, the script can still generate a dedicated
+   passwordless automation key, pin the server host key, and append the
+   restricted stdio MCP entry. This generated fallback requires giving the
+   emitted `.pub` key to the administrator and stopping for authorization.
+7. Rerun the relevant command with `--verify` after authorization. Report whether
+   setup used `pre-authorized` or `generated fallback`, and report the sanitized
+   status returned by the MCP handshake.
+8. Ask the user to restart Codex if the newly configured MCP or skill is not
    visible. Configuration changes do not alter the current process's tool
    catalog.
 
@@ -56,12 +69,13 @@ conflict and ask before changing it manually.
   current contract rejects further MCP continuation of that conversation.
 - Use `claude_status` on first use, when the user asks about Opus allowance, or
   while diagnosing availability; do not call it before every request. In
-  `opus_quota`, `five_hour` and `seven_day` are shared plan windows that apply
-  to Opus, while `seven_day_opus` is an optional additional Opus-specific
-  window. These are shared-account values, not separate owner/partner quotas.
-  Report used/remaining percentages and reset times as returned. If an optional
-  window is `null` or quota is unavailable, say unknown rather than treating it
-  as zero usage or unlimited capacity; mention `cached`/`stale` when relevant.
+  `opus_quota`, `five_hour` and `seven_day` come only from Claude Code's
+  official statusline `rate_limits` observation. Report the returned
+  used/remaining percentages, reset times, `source`, `observed_at`, and
+  staleness exactly. If quota is unavailable, say unknown rather than treating
+  it as zero usage or unlimited capacity, and point the user to the returned
+  official `manual_check_url` for a manual check. Never try to read Claude
+  OAuth credentials or call an undocumented usage endpoint.
 
 `claude_list_conversations` and `claude_export_conversation` are isolated to
 the current SSH principal. Verification must expose exactly these seven tools:

@@ -497,24 +497,25 @@ def create_app(settings: Settings) -> FastMCP:
                 "default_model": "opus" if "opus" in settings.models else next(iter(settings.models)),
                 "models": model_status,
             }
-            if not logged_in or auth_method != "claude.ai":
+            if not logged_in:
                 result["opus_quota"] = {
                     "available": False,
-                    "source": "claude_code_oauth_usage",
-                    "reason": "requires_claude_ai_oauth",
+                    "source": "claude_code_statusline",
+                    "reason": "requires_claude_ai_login",
+                    "manual_check_url": "https://claude.ai/usage",
                 }
             else:
                 try:
                     result["opus_quota"] = await asyncio.to_thread(
                         get_opus_quota_status,
-                        _claude_home(),
-                        settings.work_root / "state" / "opus-quota-cache.json",
+                        settings.work_root / "state" / "statusline-observation.json",
                     )
                 except Exception:
                     result["opus_quota"] = {
                         "available": False,
-                        "source": "claude_code_oauth_usage",
-                        "reason": "usage_endpoint_unavailable",
+                        "source": "claude_code_statusline",
+                        "reason": "statusline_observation_unavailable",
+                        "manual_check_url": "https://claude.ai/usage",
                     }
             finish_call(
                 settings.database_path,

@@ -10,3 +10,9 @@
 /*.db
 /*.db-*
 /.coverage
+
+# MCP credentials and owner-to-partner delivery artifacts never belong in Git.
+claude_mcp_*_ed25519*
+partner-handoff-*
+*.key
+*.pem

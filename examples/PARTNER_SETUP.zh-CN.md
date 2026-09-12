@@ -3,24 +3,24 @@
 这个入口直接走公网 SSH stdio，不需要安装或加入 Tailscale。它只允许调用
 Claude Research MCP，不提供服务器 Shell、文件访问、桌面或端口转发。
 
-## 首选：运行已安装 Skill 的自动配置
+开始前，Owner 与 Partner 必须确认这种访问符合 Anthropic 的账号条款，而且
+Partner 实际使用地属于 Anthropic 支持地区。这里的技术隔离不能让不合规的
+消费者账号共享变得合规或“不会封号”。
+
+## 首选：导入 Owner 已预授权的专用密钥
 
 以下命令必须在已安装的 `claude-research` Skill 目录中运行：
 
 ```sh
-python3 scripts/setup_client.py
+python3 scripts/setup_client.py --principal partner \
+  --import-key /absolute/path/to/delivered-private-key --verify
 ```
 
-脚本会生成本机专用密钥、固定服务器主机密钥，并把受限 MCP 配置写入你的
-Codex 配置。它只会显示 `.pub` 公钥；不要读取、显示或发送私钥。把公钥交给
-服务器管理员并等待授权，然后运行：
-
-```sh
-python3 scripts/setup_client.py --verify
-```
-
-验证通过后重启 Codex。若自动配置成功，不要再执行下面的手动 fallback，
-以免产生两套密钥或配置。
+脚本会把交付私钥复制到默认专用路径（0600），拒绝符号链接和覆盖，在本机
+派生并验证公钥，固定服务器主机密钥，将受限 MCP 配置写入 Codex，并做真实
+握手。它不输出私钥，也不要求回传 `.pub`。验证成功后安全删除交付源文件和
+交付压缩包，再重启 Codex；保留导入到 `~/.ssh` 的工作密钥。若自动配置成功，
+不要再执行下面的 fallback，以免产生两套密钥或配置。
 
 ## 手动 fallback
 
@@ -34,7 +34,7 @@ Linux/macOS：
 ssh-keygen -t ed25519 -a 100 -f ~/.ssh/claude_mcp_partner_ed25519
 ```
 
-不要把私钥 `~/.ssh/claude_mcp_partner_ed25519` 发给任何人。只把下面这个
+不要把私钥 `~/.ssh/claude_mcp_partner_ed25519` 发给管理员。只把下面这个
 公钥文件交给管理员：
 
 ```text
@@ -77,7 +77,7 @@ args = [
   "-o", "ConnectTimeout=10",
   "-o", "ServerAliveInterval=30",
   "-o", "ServerAliveCountMax=2",
-  "ubuntu@44.255.229.140",
+  "claudemcp@44.255.229.140",
 ]
 startup_timeout_sec = 20
 tool_timeout_sec = 720
@@ -92,16 +92,19 @@ enabled_tools = [
 ]
 ```
 
+`密钥模式: generated fallback` 表示没有预置密钥、走现场生成流程，仍需把
+`.pub` 交给 Owner 并等待授权。不得复用 Owner 密钥或任何通用登录密钥。
+
 重启 Codex 后调用 `claude_status`。应看到：
 
 - `principal`: `partner`
 - `logged_in`: `true`
 - `subscription_type`: `pro`
 - 当前允许模型只有 `opus`
-- `opus_quota`: Opus 当前适用的 5 小时/7 天额度；如果 Claude 另行提供
-  Opus 专属周额度，会显示在 `seven_day_opus`。字段为 `null` 代表未知，
-  不代表尚未使用或额度无限；这里显示的是两人共用账户的额度，不是 partner
-  独享额度
+- `opus_quota`: 来自 Claude Code 官方 statusline `rate_limits` 的 5 小时/7
+  天额度观测，包含 `source`、`observed_at`、`stale` 和 `age_seconds`。
+  `available: false` 代表未知，不代表尚未使用或额度无限；按返回的
+  `manual_check_url` 人工检查官方用量页
 
 ## 会话用法
 

@@ -24,6 +24,7 @@ from claude_research_mcp.executor import (
     build_auth_status_command,
     build_ask_command,
     build_version_command,
+    child_environment,
     run_command,
     truncate_text,
     validate_options,
@@ -50,6 +51,39 @@ TOOLS = [
     "claude_list_conversations",
     "claude_export_conversation",
 ]
+
+
+def test_child_environment_is_minimal_and_disables_nonessential_traffic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", "/srv/claude")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("LANG", "C.UTF-8")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    monkeypatch.setenv("CLAUDE_MCP_STATUSLINE_OBSERVATION", "/state/quota.json")
+    monkeypatch.setenv("SSH_CLIENT", "203.0.113.10 12345 22022")
+    monkeypatch.setenv("SSH_CONNECTION", "203.0.113.10 12345 10.0.0.1 22022")
+    monkeypatch.setenv("XDG_SESSION_ID", "remote-session")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-pass")
+
+    result = child_environment()
+
+    assert result == {
+        "HOME": "/srv/claude",
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "CLAUDE_MCP_STATUSLINE_OBSERVATION": "/state/quota.json",
+        "NO_COLOR": "1",
+        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
+        "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_ERROR_REPORTING": "1",
+        "DISABLE_FEEDBACK_COMMAND": "1",
+        "DISABLE_TELEMETRY": "1",
+        "DO_NOT_TRACK": "1",
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+    }
 
 
 def make_settings(tmp_path: Path, principal: str = "owner", **overrides):
@@ -558,77 +592,83 @@ def test_status_and_fable_version_gate(tmp_path):
     }
 
 
-def test_status_includes_private_opus_quota_without_leaking_identity(tmp_path, monkeypatch):
-    claude_home = tmp_path / "claude-home"
-    credentials = claude_home / ".credentials.json"
-    claude_home.mkdir()
-    credentials.write_text(
-        json.dumps({"claudeAiOauth": {"accessToken": "x" * 64}}), encoding="utf-8"
-    )
-    credentials.chmod(0o600)
-    monkeypatch.setattr(server_module, "_claude_home", lambda: claude_home)
+def test_status_includes_official_quota_observation_without_leaking_identity(
+    tmp_path, monkeypatch
+):
     settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin)
+    unavailable = asyncio.run(get_tool(create_app(settings), "claude_status")())
+    assert unavailable["opus_quota"] == {
+        "available": False,
+        "source": "claude_code_statusline",
+        "reason": "statusline_observation_unavailable",
+        "manual_check_url": "https://claude.ai/usage",
+    }
+
+    sample = {
+        "available": True,
+        "source": "claude_code_statusline",
+        "observed_at": "2026-09-12T00:00:00+00:00",
+        "stale": False,
+        "age_seconds": 0,
+        "five_hour": {
+            "used_percent": 20.0,
+            "remaining_percent": 80.0,
+            "resets_at": "2026-09-12T05:00:00+00:00",
+        },
+        "seven_day": {
+            "used_percent": 30.0,
+            "remaining_percent": 70.0,
+            "resets_at": "2026-09-16T00:00:00+00:00",
+        },
+    }
     monkeypatch.setattr(
         server_module,
         "get_opus_quota_status",
-        lambda home, path: {
-            "available": True,
-            "source": "claude_code_oauth_usage",
-            "fetched_at": "2026-09-12T00:00:00+00:00",
-            "cached": False,
-            "stale": False,
-            "cache_age_seconds": 0,
-            "five_hour": {
-                "used_percent": 20.0,
-                "remaining_percent": 80.0,
-                "resets_at": "2026-09-12T05:00:00+00:00",
-            },
-            "seven_day": {
-                "used_percent": 30.0,
-                "remaining_percent": 70.0,
-                "resets_at": "2026-09-16T00:00:00+00:00",
-            },
-            "seven_day_opus": None,
+        lambda path: {
+            **sample,
         },
     )
     app = create_app(settings)
     assert [tool.name for tool in asyncio.run(app.list_tools())] == TOOLS
     status = asyncio.run(get_tool(app, "claude_status")())
-    assert status["opus_quota"]["seven_day_opus"] is None
+    assert status["opus_quota"]["five_hour"]["used_percent"] == 20.0
     rendered = json.dumps(status)
     assert "secret@example.com" not in rendered
     assert "secret-org" not in rendered
-    assert "x" * 64 not in rendered
+    assert "token" not in rendered.casefold()
+    assert "credentials" not in rendered.casefold()
     assert "email" not in status
     assert "org" not in status
 
     monkeypatch.setattr(
         server_module,
         "get_opus_quota_status",
-        lambda home, path: (_ for _ in ()).throw(RuntimeError("secret token")),
+        lambda path: (_ for _ in ()).throw(RuntimeError("secret token")),
     )
     surviving = asyncio.run(get_tool(app, "claude_status")())
     assert surviving["status"] == "ok"
     assert surviving["opus_quota"]["available"] is False
+    assert surviving["opus_quota"]["manual_check_url"] == "https://claude.ai/usage"
 
 
-def test_status_does_not_read_oauth_quota_for_other_auth(tmp_path, monkeypatch):
+def test_status_does_not_report_quota_for_missing_login(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
-    fake_claude(settings.claude_bin, auth_method="api_key")
+    fake_claude(settings.claude_bin, logged_in=False)
     monkeypatch.setattr(
         server_module,
         "get_opus_quota_status",
-        lambda home, path: pytest.fail("non-OAuth status must not read OAuth credentials"),
+        lambda path: pytest.fail("quota status requires a Claude login"),
     )
 
     status = asyncio.run(get_tool(create_app(settings), "claude_status")())
 
-    assert status["auth_method"] == "api_key"
+    assert status["logged_in"] is False
     assert status["opus_quota"] == {
         "available": False,
-        "source": "claude_code_oauth_usage",
-        "reason": "requires_claude_ai_oauth",
+        "source": "claude_code_statusline",
+        "reason": "requires_claude_ai_login",
+        "manual_check_url": "https://claude.ai/usage",
     }
 
 
