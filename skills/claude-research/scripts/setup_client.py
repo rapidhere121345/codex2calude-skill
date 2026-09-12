@@ -576,6 +576,13 @@ def check_responses(stdout: str, principal: str) -> None:
         or models["opus"].get("cli_supported") is not True
     ):
         raise VerifyError("claude_status 未确认 opus 可用")
+    quota = status.get("opus_quota")
+    if (
+        not isinstance(quota, dict)
+        or quota.get("source") != "claude_code_oauth_usage"
+        or not isinstance(quota.get("available"), bool)
+    ):
+        raise VerifyError("claude_status 未提供有效的 Opus 额度状态")
 
 
 async def _read_bounded_stderr(

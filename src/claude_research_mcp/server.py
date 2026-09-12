@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -48,6 +49,7 @@ from .persistence import (
     record_audit_event,
     reserve_call,
 )
+from .usage import get_opus_quota_status
 
 
 INSTRUCTIONS = (
@@ -480,19 +482,40 @@ def create_app(settings: Settings) -> FastMCP:
                 raise ExecutionError("Claude CLI returned invalid auth status") from exc
             if not isinstance(auth_payload, dict):
                 raise ExecutionError("Claude CLI returned invalid auth status")
+            logged_in = auth_payload.get("loggedIn") is True
+            auth_method = _safe_status_label(auth_payload.get("authMethod"))
             result = {
                 "status": "ok",
                 "principal": settings.principal,
                 "claude_version": version,
                 "cli_compatible": server_compatible,
-                "logged_in": auth_payload.get("loggedIn") is True,
-                "auth_method": _safe_status_label(auth_payload.get("authMethod")),
+                "logged_in": logged_in,
+                "auth_method": auth_method,
                 "subscription_type": _safe_status_label(
                     auth_payload.get("subscriptionType")
                 ),
                 "default_model": "opus" if "opus" in settings.models else next(iter(settings.models)),
                 "models": model_status,
             }
+            if not logged_in or auth_method != "claude.ai":
+                result["opus_quota"] = {
+                    "available": False,
+                    "source": "claude_code_oauth_usage",
+                    "reason": "requires_claude_ai_oauth",
+                }
+            else:
+                try:
+                    result["opus_quota"] = await asyncio.to_thread(
+                        get_opus_quota_status,
+                        _claude_home(),
+                        settings.work_root / "state" / "opus-quota-cache.json",
+                    )
+                except Exception:
+                    result["opus_quota"] = {
+                        "available": False,
+                        "source": "claude_code_oauth_usage",
+                        "reason": "usage_endpoint_unavailable",
+                    }
             finish_call(
                 settings.database_path,
                 audit,

@@ -75,6 +75,10 @@ enabled_tools = [
 - `logged_in`: `true`
 - `subscription_type`: `pro`
 - 当前允许模型只有 `opus`
+- `opus_quota`: Opus 当前适用的 5 小时/7 天额度；如果 Claude 另行提供
+  Opus 专属周额度，会显示在 `seven_day_opus`。字段为 `null` 代表未知，
+  不代表尚未使用或额度无限；这里显示的是两人共用账户的额度，不是 partner
+  独享额度
 
 ## 4. 会话用法
 

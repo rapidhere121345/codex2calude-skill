@@ -51,8 +51,14 @@ conflict and ask before changing it manually.
 - Use `claude_close` only when the logical task is genuinely finished or the
   user asks to end it. Closing does not delete Claude's transcript, but the
   current contract rejects further MCP continuation of that conversation.
-- Use `claude_status` on first use or while diagnosing availability; do not call
-  it before every request.
+- Use `claude_status` on first use, when the user asks about Opus allowance, or
+  while diagnosing availability; do not call it before every request. In
+  `opus_quota`, `five_hour` and `seven_day` are shared plan windows that apply
+  to Opus, while `seven_day_opus` is an optional additional Opus-specific
+  window. These are shared-account values, not separate owner/partner quotas.
+  Report used/remaining percentages and reset times as returned. If an optional
+  window is `null` or quota is unavailable, say unknown rather than treating it
+  as zero usage or unlimited capacity; mention `cached`/`stale` when relevant.
 
 `claude_list_conversations` and `claude_export_conversation` are isolated to
 the current SSH principal. Verification must expose exactly these seven tools:

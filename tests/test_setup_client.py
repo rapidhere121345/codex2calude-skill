@@ -120,6 +120,11 @@ def mcp_stdout(
                     "principal": principal,
                     "logged_in": logged_in,
                     "models": {"opus": {"cli_supported": True}},
+                    "opus_quota": {
+                        "available": False,
+                        "source": "claude_code_oauth_usage",
+                        "reason": "usage_endpoint_unavailable",
+                    },
                 },
             },
         },
@@ -287,6 +292,19 @@ def test_client_inventory_is_exactly_seven_tools() -> None:
     )
 
 
+def test_verify_rejects_missing_opus_quota_contract(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = [json.loads(line) for line in mcp_stdout().splitlines()]
+    del responses[2]["result"]["structuredContent"]["opus_quota"]
+    stdout = "\n".join(json.dumps(item) for item in responses) + "\n"
+    mock_verify(monkeypatch, stdout=stdout)
+
+    assert run(workspace, "--verify") == 1
+
+
 def test_unauthorized_key_reports_admin_action(
     tool_mocks: dict[str, t.Any],
     workspace: tuple[Path, Path, Path],
@@ -360,6 +378,11 @@ def test_real_exchange_sequences_requests_without_closing_stdin(tmp_path: Path) 
                             "principal": "partner",
                             "logged_in": True,
                             "models": {"opus": {"cli_supported": True}},
+                            "opus_quota": {
+                                "available": False,
+                                "source": "claude_code_oauth_usage",
+                                "reason": "usage_endpoint_unavailable",
+                            },
                         },
                     }
                 else:

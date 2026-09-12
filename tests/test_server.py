@@ -68,7 +68,14 @@ def make_settings(tmp_path: Path, principal: str = "owner", **overrides):
     return load_settings(env)
 
 
-def fake_claude(path: Path, *, fail: bool = False, session: str = "claude-session-123") -> None:
+def fake_claude(
+    path: Path,
+    *,
+    fail: bool = False,
+    session: str = "claude-session-123",
+    logged_in: bool = True,
+    auth_method: str = "claude.ai",
+) -> None:
     mode = "fail" if fail else "ok"
     output = json.dumps(
         {
@@ -80,11 +87,21 @@ def fake_claude(path: Path, *, fail: bool = False, session: str = "claude-sessio
             },
         }
     )
+    auth_output = json.dumps(
+        {
+            "loggedIn": logged_in,
+            "authMethod": auth_method,
+            "subscriptionType": "pro",
+            "email": "secret@example.com",
+            "orgId": "secret-org",
+        },
+        separators=(",", ":"),
+    )
     body = (
         "#!/bin/sh\n"
         "if [ \"$1\" = --version ]; then printf '2.1.236\\n'; exit 0; fi\n"
         "if [ \"$1\" = auth ] && [ \"$2\" = status ]; then\n"
-        "  printf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"pro\",\"email\":\"secret@example.com\",\"orgId\":\"secret-org\"}'\n"
+        f"  printf '%s\\n' '{auth_output}'\n"
         "  exit 0\n"
         "fi\n"
         "prompt=$(cat)\n"
@@ -538,6 +555,80 @@ def test_status_and_fable_version_gate(tmp_path):
     assert status["models"]["fable"] == {
         "cli_supported": False,
         "min_cli_version": "2.1.257",
+    }
+
+
+def test_status_includes_private_opus_quota_without_leaking_identity(tmp_path, monkeypatch):
+    claude_home = tmp_path / "claude-home"
+    credentials = claude_home / ".credentials.json"
+    claude_home.mkdir()
+    credentials.write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": "x" * 64}}), encoding="utf-8"
+    )
+    credentials.chmod(0o600)
+    monkeypatch.setattr(server_module, "_claude_home", lambda: claude_home)
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin)
+    monkeypatch.setattr(
+        server_module,
+        "get_opus_quota_status",
+        lambda home, path: {
+            "available": True,
+            "source": "claude_code_oauth_usage",
+            "fetched_at": "2026-09-12T00:00:00+00:00",
+            "cached": False,
+            "stale": False,
+            "cache_age_seconds": 0,
+            "five_hour": {
+                "used_percent": 20.0,
+                "remaining_percent": 80.0,
+                "resets_at": "2026-09-12T05:00:00+00:00",
+            },
+            "seven_day": {
+                "used_percent": 30.0,
+                "remaining_percent": 70.0,
+                "resets_at": "2026-09-16T00:00:00+00:00",
+            },
+            "seven_day_opus": None,
+        },
+    )
+    app = create_app(settings)
+    assert [tool.name for tool in asyncio.run(app.list_tools())] == TOOLS
+    status = asyncio.run(get_tool(app, "claude_status")())
+    assert status["opus_quota"]["seven_day_opus"] is None
+    rendered = json.dumps(status)
+    assert "secret@example.com" not in rendered
+    assert "secret-org" not in rendered
+    assert "x" * 64 not in rendered
+    assert "email" not in status
+    assert "org" not in status
+
+    monkeypatch.setattr(
+        server_module,
+        "get_opus_quota_status",
+        lambda home, path: (_ for _ in ()).throw(RuntimeError("secret token")),
+    )
+    surviving = asyncio.run(get_tool(app, "claude_status")())
+    assert surviving["status"] == "ok"
+    assert surviving["opus_quota"]["available"] is False
+
+
+def test_status_does_not_read_oauth_quota_for_other_auth(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin, auth_method="api_key")
+    monkeypatch.setattr(
+        server_module,
+        "get_opus_quota_status",
+        lambda home, path: pytest.fail("non-OAuth status must not read OAuth credentials"),
+    )
+
+    status = asyncio.run(get_tool(create_app(settings), "claude_status")())
+
+    assert status["auth_method"] == "api_key"
+    assert status["opus_quota"] == {
+        "available": False,
+        "source": "claude_code_oauth_usage",
+        "reason": "requires_claude_ai_oauth",
     }
 
 

@@ -6,7 +6,8 @@ Tailscale dependency.
 
 The bridge exposes exactly seven tools:
 
-- `claude_status()` — sanitized CLI, login, subscription, and model-policy status.
+- `claude_status()` — sanitized CLI, login, subscription, model-policy, and
+  Opus-applicable plan-usage status.
 - `claude_once(...)` — one independent query.
 - `claude_start(...)` — start a logical task with an optional human title and
   return an opaque `conversation_id`.
@@ -63,6 +64,18 @@ it, by adding this entry to `CLAUDE_MCP_MODELS`:
 Do not add Fable to the allowlist merely to probe entitlement: non-interactive
 Claude Code calls can consume usage before reporting an account-level problem.
 
+`claude_status.opus_quota` makes a best-effort read from the same authenticated
+plan-usage endpoint used by Claude Code, without sending a model request. It is
+available only for the active claude.ai OAuth login. `five_hour` and
+`seven_day` are the shared subscription windows that apply while using Opus;
+`seven_day_opus` is an additional Opus-specific weekly window only when Claude
+reports one. Each available window contains used/remaining percentages and its
+reset time. A missing Opus-specific window remains `null`, never an invented
+100% remainder. Owner and partner see the same account-level windows, not
+per-principal allowances. A small sanitized cache avoids repeated endpoint
+calls and may be returned as stale for up to one hour during a transient
+refresh failure.
+
 ## Security boundary
 
 - SSH on a dedicated public port is transport only. Each public key is forced
@@ -80,6 +93,10 @@ Claude Code calls can consume usage before reporting an account-level problem.
 - SQLite enforces principal ownership and rolling per-principal quotas. A
   process-wide flock limits shared-account concurrency.
 - Responses and diagnostics are bounded. Raw Claude stderr is not returned.
+- Quota status reads only the server-owned OAuth access token, sends it only to
+  the fixed Anthropic HTTPS endpoint, and never returns, logs, or caches the
+  token or raw usage response. If credentials or usage data cannot be safely
+  validated, quota is reported unavailable rather than guessed.
 - The shared Claude login remains in `/home/ubuntu`; neither user receives its
   OAuth material. The state directory must stay mode `0700`.
 
