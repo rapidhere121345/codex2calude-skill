@@ -62,6 +62,8 @@ enabled_tools = [
   "claude_status",
   "claude_once",
   "claude_start",
+  "claude_list_conversations",
+  "claude_export_conversation",
   "claude_continue",
   "claude_close",
 ]
@@ -77,9 +79,17 @@ enabled_tools = [
 ## 4. 会话用法
 
 - 独立问题：`claude_once`
-- 新任务：`claude_start`，保存返回的 `conversation_id`
+- 新任务：`claude_start`（可给一个简短的人类可读标题），保存返回的
+  `conversation_id`
+- 跨 Codex 会话找回任务：先调用 `claude_list_conversations`，只从当前
+  principal 的列表中选择 MCP `conversation_id`；不要询问或暴露 Claude
+  原生 session ID
+- 识别或复查任务：`claude_export_conversation` 会返回可读的用户/助手对话
+  内容；只展示必要的摘录
 - 继续任务：`claude_continue`，传入同一个 `conversation_id`
-- 结束映射：`claude_close`
+- 结束映射：`claude_close`；仅在该逻辑任务真正完成时使用。关闭不会删除
+  Claude transcript，但当前契约会拒绝继续通过 MCP 续聊
 
-每个逻辑任务使用一个会话。Owner 和 Partner 的会话互相不可访问；两人共用
-服务器上的 Claude 登录，因此同时请求会排队。
+每个逻辑任务使用一个会话。列表和导出都只作用于当前 SSH principal，
+Owner 和 Partner 的会话互相不可访问；两人共用服务器上的 Claude 登录，
+因此同时请求会排队。

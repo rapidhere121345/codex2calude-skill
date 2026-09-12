@@ -195,6 +195,35 @@ def test_conflicting_server_section_is_rejected(
     assert config_path.read_text() == raw
 
 
+def test_legacy_five_tool_config_is_safely_upgraded(
+    tool_mocks: dict[str, t.Any],
+    workspace: tuple[Path, Path, Path],
+) -> None:
+    assert run(workspace) == 0
+    codex_home, key_path, known_hosts_path = workspace
+    config_path = codex_home / "config.toml"
+    current = config_path.read_text()
+    legacy = current.replace(
+        setup.enabled_tools_assignment(setup.TOOLS),
+        setup.enabled_tools_assignment(setup.LEGACY_TOOLS),
+        1,
+    )
+    config_path.write_text("# unrelated user setting\n" + legacy + "\n[notice]\nhide = true\n")
+
+    assert run(workspace) == 0
+    upgraded = config_path.read_text()
+    import tomllib
+
+    parsed = tomllib.loads(upgraded)
+    assert parsed["mcp_servers"]["claude_research"] == setup.expected_config(
+        key_path, known_hosts_path
+    )
+    assert upgraded.startswith("# unrelated user setting\n")
+    assert upgraded.endswith("[notice]\nhide = true\n")
+    assert setup.enabled_tools_assignment(setup.LEGACY_TOOLS) not in upgraded
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+
+
 def test_known_hosts_mismatch_fails_closed(
     tool_mocks: dict[str, t.Any],
     workspace: tuple[Path, Path, Path],
@@ -235,6 +264,18 @@ def test_verify_uses_pinned_ssh_and_parses_responses(
     assert [message.get("id") for message in messages] == [1, None, 2, 3]
     assert messages[1]["method"] == "notifications/initialized"
     assert messages[3]["params"]["name"] == "claude_status"
+
+
+def test_client_inventory_is_exactly_seven_tools() -> None:
+    assert setup.TOOLS == (
+        "claude_status",
+        "claude_once",
+        "claude_start",
+        "claude_list_conversations",
+        "claude_export_conversation",
+        "claude_continue",
+        "claude_close",
+    )
 
 
 def test_unauthorized_key_reports_admin_action(
@@ -288,6 +329,7 @@ def test_real_exchange_sequences_requests_without_closing_stdin(tmp_path: Path) 
 
             tools = [
                 "claude_status", "claude_once", "claude_start",
+                "claude_list_conversations", "claude_export_conversation",
                 "claude_continue", "claude_close",
             ]
             for line in sys.stdin:

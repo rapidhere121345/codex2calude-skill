@@ -30,6 +30,15 @@ TOOLS = (
     "claude_status",
     "claude_once",
     "claude_start",
+    "claude_list_conversations",
+    "claude_export_conversation",
+    "claude_continue",
+    "claude_close",
+)
+LEGACY_TOOLS = (
+    "claude_status",
+    "claude_once",
+    "claude_start",
     "claude_continue",
     "claude_close",
 )
@@ -164,13 +173,17 @@ def ssh_args(key_path: Path, known_hosts_path: Path) -> list[str]:
     ]
 
 
-def expected_config(key_path: Path, known_hosts_path: Path) -> dict[str, Any]:
+def expected_config(
+    key_path: Path,
+    known_hosts_path: Path,
+    tools: tuple[str, ...] = TOOLS,
+) -> dict[str, Any]:
     return {
         "command": "ssh",
         "args": ssh_args(key_path, known_hosts_path),
         "startup_timeout_sec": 20,
         "tool_timeout_sec": 720,
-        "enabled_tools": list(TOOLS),
+        "enabled_tools": list(tools),
     }
 
 
@@ -291,10 +304,10 @@ def atomic_replace(path: Path, content: bytes, *, mode: int = 0o600) -> None:
 
 def validate_config(
     config_path: Path, key_path: Path, known_hosts_path: Path
-) -> tuple[bool, bytes | None]:
+) -> tuple[str, bytes | None]:
     expected = expected_config(key_path, known_hosts_path)
     if not config_path.exists():
-        return False, None
+        return "missing", None
     if config_path.is_symlink() or not config_path.is_file():
         raise SetupError("config.toml 必须是常规文件且不能是符号链接")
     try:
@@ -307,23 +320,29 @@ def validate_config(
     if "mcp_servers" in document and not isinstance(servers, dict):
         raise SetupError("config.toml 中 mcp_servers 配置无效")
     if "claude_research" not in (servers or {}):
-        return False, raw
+        return "missing", raw
     section = servers["claude_research"]
-    if section != expected:
-        raise SetupError(
-            "已有 [mcp_servers.claude_research] 与期望配置不完全一致；为避免覆盖已停止"
-        )
-    return True, raw
+    if section == expected:
+        return "current", raw
+    if section == expected_config(key_path, known_hosts_path, LEGACY_TOOLS):
+        return "legacy", raw
+    raise SetupError(
+        "已有 [mcp_servers.claude_research] 与期望配置不完全一致；为避免覆盖已停止"
+    )
 
 
 def toml_string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def enabled_tools_assignment(tools: tuple[str, ...]) -> str:
+    values = "\n".join(f"  {toml_string(item)}," for item in tools)
+    return f"enabled_tools = [\n{values}\n]"
+
+
 def config_block(key_path: Path, known_hosts_path: Path) -> str:
     expected = expected_config(key_path, known_hosts_path)
     args = "\n".join(f"  {toml_string(item)}," for item in expected["args"])
-    tools = "\n".join(f"  {toml_string(item)}," for item in TOOLS)
     return f'''
 [mcp_servers.claude_research]
 command = "ssh"
@@ -332,18 +351,58 @@ args = [
 ]
 startup_timeout_sec = {expected["startup_timeout_sec"]}
 tool_timeout_sec = {expected["tool_timeout_sec"]}
-enabled_tools = [
-{tools}
-]
+{enabled_tools_assignment(TOOLS)}
 '''
+
+
+def migrate_legacy_config(
+    raw: bytes, key_path: Path, known_hosts_path: Path
+) -> bytes:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise SetupError("config.toml 无法安全解析") from exc
+    header = "[mcp_servers.claude_research]"
+    starts = [match.start() for match in re.finditer(rf"(?m)^{re.escape(header)}[ \t]*$", text)]
+    if len(starts) != 1:
+        raise SetupError("旧版 claude_research 配置无法安全定位；已拒绝自动迁移")
+    start = starts[0]
+    next_header = re.search(r"(?m)^\[[^\r\n]+\][ \t]*$", text[start + len(header) :])
+    end = (
+        start + len(header) + next_header.start()
+        if next_header is not None
+        else len(text)
+    )
+    section = text[start:end]
+    legacy = enabled_tools_assignment(LEGACY_TOOLS)
+    if section.count(legacy) != 1:
+        raise SetupError("旧版工具清单不是安装器生成的标准格式；已拒绝自动迁移")
+    replacement = enabled_tools_assignment(TOOLS)
+    updated = text[:start] + section.replace(legacy, replacement, 1) + text[end:]
+    try:
+        parsed = tomllib.loads(updated)
+    except tomllib.TOMLDecodeError as exc:
+        raise SetupError("升级后的 config.toml 无法安全解析；已停止") from exc
+    if parsed.get("mcp_servers", {}).get("claude_research") != expected_config(
+        key_path, known_hosts_path
+    ):
+        raise SetupError("旧版 claude_research 配置迁移校验失败；已停止")
+    return updated.encode("utf-8")
 
 
 def prepare_config(
     config_path: Path, key_path: Path, known_hosts_path: Path
 ) -> None:
-    exists, raw = validate_config(config_path, key_path, known_hosts_path)
-    if exists:
+    state, raw = validate_config(config_path, key_path, known_hosts_path)
+    if state == "current":
         os.chmod(config_path, 0o600)
+        return
+    if state == "legacy":
+        assert raw is not None
+        atomic_replace(
+            config_path,
+            migrate_legacy_config(raw, key_path, known_hosts_path),
+        )
         return
     block = config_block(key_path, known_hosts_path).encode("utf-8")
     if raw is None:
@@ -498,7 +557,7 @@ def check_responses(stdout: str, principal: str) -> None:
             raise VerifyError("tools/list 包含无效工具项")
         names.append(tool["name"])
     if sorted(names) != sorted(TOOLS):
-        raise VerifyError("tools/list 未提供全部五个 claude 工具")
+        raise VerifyError("tools/list 未提供全部七个 claude 工具")
 
     call_result = rpc_result(responses[3], "claude_status")
     if call_result.get("isError") is True:

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import time
+import unicodedata
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -32,12 +36,15 @@ from .executor import (
 from .locking import concurrency_slot
 from .persistence import (
     RateLimitError,
+    SessionOwnershipError,
     attach_claude_session,
     close_conversation,
     create_conversation,
     finish_call,
     get_conversation,
     initialize,
+    list_conversations,
+    patch_audit_conversation,
     record_audit_event,
     reserve_call,
 )
@@ -45,24 +52,70 @@ from .persistence import (
 
 INSTRUCTIONS = (
     "Private owner/partner bridge over a shared Claude subscription. Use one "
-    "session per logical task; pass conversation_id to continue. No shell, "
-    "files, browser control, or arbitrary commands. Calls may queue; verify "
-    "important web results."
+    "session per logical task; list by title to recover conversation_id, export "
+    "to review history, and pass conversation_id to continue. No shell, files, "
+    "browser control, or arbitrary commands. Calls may queue; verify important "
+    "web results."
 )
 
 _STATUS_LABEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
+_UNSAFE_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_MAX_TRANSCRIPT_BYTES = 16_000_000
+_MAX_EXPORT_MESSAGES = 500
+_EXPORT_FORMATS = frozenset(("markdown", "json"))
 
 
 def _safe_status_label(value: object) -> str:
     return value if isinstance(value, str) and _STATUS_LABEL_RE.fullmatch(value) else "unknown"
 
 
+def _validate_title(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ConfigurationError("title must be a short human-readable label")
+    title = value.strip()
+    if not 1 <= len(title) <= 120:
+        raise ConfigurationError("title must be a short human-readable label")
+    for character in title:
+        codepoint = ord(character)
+        if (
+            codepoint < 32
+            or codepoint == 127
+            or 0x80 <= codepoint <= 0x9F
+            or 0xD800 <= codepoint <= 0xDFFF
+            or unicodedata.category(character).startswith("C")
+        ):
+            raise ConfigurationError("title contains an invalid character")
+    return title
+
+
+def _validate_list_pagination(
+    include_closed: object, limit: object, offset: object
+) -> tuple[bool, int, int]:
+    if not isinstance(include_closed, bool):
+        raise ConfigurationError("include_closed must be boolean")
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+        raise ConfigurationError("limit must be between 1 and 100")
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset < 0
+        or offset > 1_000_000
+    ):
+        raise ConfigurationError("offset must be between 0 and 1000000")
+    return include_closed, limit, offset
+
+
 def _error(exc: BaseException, prompt: object = None) -> ExecutionError:
-    message = (
-        str(exc)
-        if isinstance(exc, (ConfigurationError, ExecutionError))
-        else exc.__class__.__name__
-    )
+    if isinstance(exc, SessionOwnershipError):
+        message = "conversation is unavailable"
+    else:
+        message = (
+            str(exc)
+            if isinstance(exc, (ConfigurationError, ExecutionError))
+            else exc.__class__.__name__
+        )
     if isinstance(prompt, str) and len(prompt) >= 16 and prompt in message:
         message = message.replace(prompt, "[prompt redacted]")
     return ExecutionError(truncate_text(message, 500))
@@ -161,8 +214,11 @@ def _assert_requested_family(
 
 
 def _runtime(settings: Settings) -> None:
+    work_dir = settings.principal_work_dir
+    if work_dir.is_symlink() or (work_dir.exists() and not work_dir.is_dir()):
+        raise ExecutionError("principal working directory is unavailable")
     settings.lock_dir.mkdir(parents=True, exist_ok=True)
-    settings.principal_work_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
     initialize(settings.database_path)
 
 
@@ -199,6 +255,179 @@ def _result(
         "result": truncate_text(str(parsed["result"]), settings.result_limit),
         "model_usage": parsed["model_usage"],
     }
+
+
+def _claude_home() -> Path:
+    return Path.home() / ".claude"
+
+
+def _validate_export_format(value: object) -> str:
+    if not isinstance(value, str) or value not in _EXPORT_FORMATS:
+        raise ConfigurationError("format must be 'markdown' or 'json'")
+    return value
+
+
+def _project_directory_name(work_dir: Path) -> str:
+    encoded = re.sub(r"[^A-Za-z0-9]", "-", str(work_dir.resolve(strict=False)))
+    if not encoded or "/" in encoded or encoded in (".", ".."):
+        raise ExecutionError("conversation transcript is unavailable")
+    return encoded
+
+
+def _read_transcript(work_dir: Path, claude_session_id: str) -> list[dict[str, object]]:
+    claude_home = _claude_home()
+    projects_root = claude_home / "projects"
+    project_dir = projects_root / _project_directory_name(work_dir)
+    transcript = project_dir / f"{claude_session_id}.jsonl"
+    try:
+        if (
+            claude_home.is_symlink()
+            or projects_root.is_symlink()
+            or project_dir.is_symlink()
+            or transcript.is_symlink()
+            or not projects_root.is_dir()
+            or not project_dir.is_dir()
+            or not transcript.is_file()
+        ):
+            raise OSError("unavailable")
+        descriptor = os.open(
+            transcript,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        with os.fdopen(descriptor, "rb") as source:
+            file_stat = os.fstat(source.fileno())
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise OSError("unavailable")
+            if file_stat.st_size > _MAX_TRANSCRIPT_BYTES:
+                raise OSError("unavailable")
+            raw = source.read(_MAX_TRANSCRIPT_BYTES + 1)
+    except (OSError, ValueError):
+        raise ExecutionError("conversation transcript is unavailable") from None
+    if len(raw) > _MAX_TRANSCRIPT_BYTES:
+        raise ExecutionError("conversation transcript is unavailable")
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ExecutionError("conversation transcript is unavailable") from exc
+
+    messages: list[dict[str, object]] = []
+    for line in lines:
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ExecutionError("conversation transcript is unavailable") from exc
+        if not isinstance(record, dict):
+            continue
+        role = record.get("type") or record.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        if record.get("isMeta") is True or record.get("isSidechain") is True:
+            continue
+        timestamp = record.get("timestamp")
+        timestamp = timestamp if isinstance(timestamp, str) else ""
+        content = record.get("message", record.get("content"))
+        if isinstance(content, dict):
+            content = content.get("content")
+        if isinstance(content, list):
+            texts = [
+                block.get("text", block.get("content"))
+                for block in content
+                if isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text", block.get("content")), str)
+            ]
+            text = "\n\n".join(texts)
+        elif isinstance(content, str):
+            text = content
+        else:
+            continue
+        if not text:
+            continue
+        messages.append({"role": role, "timestamp": timestamp, "content": text})
+    return messages
+
+
+def _sanitize_export_text(value: str) -> str:
+    # Keep the caller's own prose and citations faithful; only remove control
+    # characters that are unsafe in JSONL/MCP output.
+    return _UNSAFE_TEXT_RE.sub("", value)
+
+
+def _export_result(
+    *,
+    conversation_id: str,
+    title: str,
+    conversation_status: str,
+    format_name: str,
+    messages: list[dict[str, object]],
+    character_limit: int,
+) -> dict[str, object]:
+    total_messages = len(messages)
+    bounded = messages[:_MAX_EXPORT_MESSAGES]
+    message_truncated = total_messages > len(bounded)
+    rendered: list[dict[str, object]] = []
+    markdown_parts: list[str] = []
+    used = 0
+    rendered_message_count = 0
+    content_truncated = False
+    for message in bounded:
+        role = str(message["role"])
+        content = _sanitize_export_text(str(message["content"]))
+        timestamp = _sanitize_export_text(str(message.get("timestamp", "")))
+        if format_name == "markdown":
+            heading = f"## {role.title()}"
+            if timestamp:
+                heading += f" — {timestamp}"
+            block = f"{heading}\n\n{content}\n"
+            available = max(0, character_limit - used)
+            if available == 0:
+                content_truncated = True
+                break
+            if len(block) > available:
+                block = block[:available]
+                content_truncated = True
+            used += len(block)
+            markdown_parts.append(block)
+            rendered_message_count += 1
+            if content_truncated:
+                break
+        else:
+            item = {"role": role, "timestamp": timestamp, "content": content}
+            item_size = len(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
+            available = max(0, character_limit - used)
+            if item_size > available:
+                content_truncated = True
+                overhead = item_size - len(content)
+                if available > overhead:
+                    content = content[: available - overhead]
+                    rendered.append(
+                        {"role": role, "timestamp": timestamp, "content": content}
+                    )
+                    rendered_message_count += 1
+                break
+            used += item_size
+            rendered.append(item)
+            rendered_message_count += 1
+    truncated = message_truncated or content_truncated
+    base = {
+        "status": "ok",
+        "conversation_id": conversation_id,
+        "title": title,
+        "conversation_status": conversation_status,
+        "format": format_name,
+        "message_count": rendered_message_count,
+        "total_message_count": total_messages,
+        "truncated": truncated,
+        "content_truncated": content_truncated,
+        "message_truncated": message_truncated,
+    }
+    if format_name == "markdown":
+        base["content"] = "".join(markdown_parts)
+    else:
+        base["messages"] = rendered
+    return base
 
 
 def create_app(settings: Settings) -> FastMCP:
@@ -388,6 +617,7 @@ def create_app(settings: Settings) -> FastMCP:
     @app.tool()
     async def claude_start(
         prompt: str,
+        title: str | None = None,
         model: str = "opus",
         use_web: bool = True,
         max_turns: int = DEFAULT_MAX_TURNS,
@@ -400,6 +630,7 @@ def create_app(settings: Settings) -> FastMCP:
         audit: int | None = None
         try:
             clean_prompt = validate_prompt(prompt, settings.prompt_limit)
+            clean_title = _validate_title(title)
             logical_model = validate_model(model, settings)
             logical_model, clean_web, clean_turns, clean_timeout = validate_options(
                 model=logical_model,
@@ -416,9 +647,22 @@ def create_app(settings: Settings) -> FastMCP:
                 rate_limit=settings.rate_limit,
             )
             record = create_conversation(
-                settings.database_path, settings.principal, logical_model, clean_web
+                settings.database_path,
+                settings.principal,
+                logical_model,
+                clean_web,
+                clean_title,
             )
             conversation = record.conversation_id
+            if audit is not None:
+                # Created after reserving the audit call, so patch the running
+                # audit row without emitting a second record.
+                patch_audit_conversation(
+                    settings.database_path,
+                    audit,
+                    record.conversation_id,
+                    settings.principal,
+                )
             parsed, actual_models = await _execute_new(
                 clean_prompt, logical_model, clean_web, clean_turns, clean_timeout
             )
@@ -438,6 +682,7 @@ def create_app(settings: Settings) -> FastMCP:
                 use_web=clean_web,
             )
             result["conversation_id"] = conversation
+            result["title"] = clean_title
             finish_call(
                 settings.database_path,
                 audit,
@@ -613,6 +858,168 @@ def create_app(settings: Settings) -> FastMCP:
                 status="error",
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
+            raise _error(exc) from exc
+
+    @app.tool()
+    async def claude_list_conversations(
+        include_closed: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, object]:
+        """List owned conversations, newest activity first."""
+        start = time.monotonic()
+        audit: int | None = None
+        try:
+            closed, page_limit, page_offset = _validate_list_pagination(
+                include_closed, limit, offset
+            )
+            audit = reserve_call(
+                settings.database_path,
+                principal=settings.principal,
+                tool="claude_list_conversations",
+                conversation_id=None,
+                model="-",
+                rate_limit=settings.rate_limit,
+            )
+            summaries, total, has_more = list_conversations(
+                settings.database_path,
+                principal=settings.principal,
+                include_closed=closed,
+                limit=page_limit,
+                offset=page_offset,
+            )
+            items = [
+                {
+                    "conversation_id": item.conversation_id,
+                    "title": item.title or "Untitled",
+                    "model": item.model,
+                    "use_web": item.use_web,
+                    "created_at": item.created_at,
+                    "last_activity_at": item.last_activity_at,
+                    "status": "closed" if item.closed_at is not None else "open",
+                }
+                for item in summaries
+            ]
+            finish_call(
+                settings.database_path,
+                audit,
+                status="success",
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+            return {
+                "status": "ok",
+                "count": len(items),
+                "total_count": total,
+                "next_offset": page_offset + len(items) if has_more else None,
+                "has_more": has_more,
+                "conversations": items,
+            }
+        except RateLimitError as exc:
+            record_audit_event(
+                settings.database_path,
+                principal=settings.principal,
+                tool="claude_list_conversations",
+                conversation_id=None,
+                model=None,
+                status="rate_limited",
+            )
+            raise ConfigurationError(str(exc)) from exc
+        except BaseException as exc:
+            if audit is not None:
+                finish_call(
+                    settings.database_path,
+                    audit,
+                    status="error",
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+            else:
+                record_audit_event(
+                    settings.database_path,
+                    principal=settings.principal,
+                    tool="claude_list_conversations",
+                    conversation_id=None,
+                    model=None,
+                    status="error",
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+            raise _error(exc) from exc
+
+    @app.tool()
+    async def claude_export_conversation(
+        conversation_id: str,
+        format: str = "markdown",
+    ) -> dict[str, object]:
+        """Export readable owned conversation text without internal data."""
+        start = time.monotonic()
+        clean_conversation: str | None = None
+        owned_conversation: str | None = None
+        audit: int | None = None
+        try:
+            clean_conversation = validate_conversation_id(conversation_id)
+            format_name = _validate_export_format(format)
+            record = get_conversation(
+                settings.database_path, clean_conversation, settings.principal
+            )
+            owned_conversation = clean_conversation
+            if record.claude_session_id is None:
+                raise ExecutionError("conversation transcript is unavailable")
+            claude_session_id = clean_claude_session_id(record.claude_session_id)
+            if claude_session_id is None:
+                raise ExecutionError("conversation transcript is unavailable")
+            audit = reserve_call(
+                settings.database_path,
+                principal=settings.principal,
+                tool="claude_export_conversation",
+                conversation_id=owned_conversation,
+                model="-",
+                rate_limit=settings.rate_limit,
+            )
+            messages = _read_transcript(
+                settings.principal_work_dir, claude_session_id
+            )
+            result = _export_result(
+                conversation_id=clean_conversation,
+                title=record.title or "Untitled",
+                conversation_status="closed" if record.closed else "open",
+                format_name=format_name,
+                messages=messages,
+                character_limit=settings.result_limit,
+            )
+            finish_call(
+                settings.database_path,
+                audit,
+                status="success",
+                duration_ms=int((time.monotonic() - start) * 1000),
+            )
+            return result
+        except RateLimitError as exc:
+            record_audit_event(
+                settings.database_path,
+                principal=settings.principal,
+                tool="claude_export_conversation",
+                conversation_id=owned_conversation,
+                model=None,
+                status="rate_limited",
+            )
+            raise ConfigurationError(str(exc)) from exc
+        except BaseException as exc:
+            if audit is not None:
+                finish_call(
+                    settings.database_path,
+                    audit,
+                    status="error",
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+            else:
+                record_audit_event(
+                    settings.database_path,
+                    principal=settings.principal,
+                    tool="claude_export_conversation",
+                    conversation_id=owned_conversation,
+                    model=None,
+                    status="error",
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
             raise _error(exc) from exc
 
     return app

@@ -34,14 +34,31 @@ conflict and ask before changing it manually.
 ## Choose the interaction
 
 - Use `claude_once` for one independent question that will not need follow-up.
-- Use `claude_start` for a new logical task. Keep the returned
+- Use `claude_start` for a new logical task. Its title is optional and must be
+  a short human-readable title when supplied. Keep the returned
   `conversation_id` in the current Codex conversation.
+- Across Codex sessions, call `claude_list_conversations` first to list the
+  current principal's conversations, then select the task by its MCP
+  `conversation_id` and human-readable metadata. Never ask the user for, use,
+  print, or otherwise expose Claude's native session ID. The default list shows
+  resumable open conversations; use `include_closed=true` only when the user
+  wants to find or export finished history.
+- Use `claude_export_conversation` when the user needs to identify or review a
+  conversation: it returns readable user/assistant conversation content. Prefer
+  the minimum excerpt needed and do not expose another principal's data.
 - Use `claude_continue` when the user continues that same logical task. Never
   reuse its ID for an unrelated task or another user.
-- Use `claude_close` when the logical task is finished or the user asks to end
-  it. Closing the bridge mapping does not delete Claude's transcript.
+- Use `claude_close` only when the logical task is genuinely finished or the
+  user asks to end it. Closing does not delete Claude's transcript, but the
+  current contract rejects further MCP continuation of that conversation.
 - Use `claude_status` on first use or while diagnosing availability; do not call
   it before every request.
+
+`claude_list_conversations` and `claude_export_conversation` are isolated to
+the current SSH principal. Verification must expose exactly these seven tools:
+`claude_status`, `claude_once`, `claude_start`,
+`claude_list_conversations`, `claude_export_conversation`,
+`claude_continue`, and `claude_close`.
 
 ## Request policy
 

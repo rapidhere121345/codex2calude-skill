@@ -20,6 +20,8 @@ enabled_tools = [
   "claude_status",
   "claude_once",
   "claude_start",
+  "claude_list_conversations",
+  "claude_export_conversation",
   "claude_continue",
   "claude_close",
 ]
