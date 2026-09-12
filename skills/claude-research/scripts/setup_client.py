@@ -78,7 +78,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--codex-home",
         type=absolute_path,
-        default=default_codex_home,
+        default=default_codex_home(),
         help="Codex home directory (default: CODEX_HOME or ~/.codex).",
     )
     parser.add_argument(

@@ -127,6 +127,15 @@ def mcp_stdout(
     return "\n".join(json.dumps(item, separators=(",", ":")) for item in responses) + "\n"
 
 
+def test_parse_args_resolves_default_codex_home(monkeypatch, tmp_path: Path) -> None:
+    codex_home = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    args = setup.parse_args([])
+
+    assert args.codex_home == codex_home.resolve()
+
+
 def mock_verify(
     monkeypatch: pytest.MonkeyPatch,
     *,
