@@ -1,0 +1,16 @@
+[Unit]
+Description=Restricted public SSH transport for Claude research MCP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/usr/sbin/sshd -t -f /etc/ssh/sshd_config.claude-mcp
+ExecStart=/usr/sbin/sshd -D -e -f /etc/ssh/sshd_config.claude-mcp
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

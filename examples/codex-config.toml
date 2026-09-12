@@ -1,0 +1,25 @@
+# Replace both /ABSOLUTE/PATH values. Give owner and partner separate keys.
+[mcp_servers.claude_research]
+command = "ssh"
+args = [
+  "-T",
+  "-p", "22022",
+  "-i", "/ABSOLUTE/PATH/claude_mcp",
+  "-o", "BatchMode=yes",
+  "-o", "IdentitiesOnly=yes",
+  "-o", "StrictHostKeyChecking=yes",
+  "-o", "UserKnownHostsFile=/ABSOLUTE/PATH/claude_mcp_known_hosts",
+  "-o", "ConnectTimeout=10",
+  "-o", "ServerAliveInterval=30",
+  "-o", "ServerAliveCountMax=2",
+  "ubuntu@44.255.229.140",
+]
+startup_timeout_sec = 20
+tool_timeout_sec = 720
+enabled_tools = [
+  "claude_status",
+  "claude_once",
+  "claude_start",
+  "claude_continue",
+  "claude_close",
+]

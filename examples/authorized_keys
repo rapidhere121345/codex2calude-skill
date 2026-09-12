@@ -1,0 +1,4 @@
+# Replace each entire placeholder key with the corresponding public key.
+# Never place a private key here. Keep one independently revocable line per user.
+restrict,command="/opt/claude-research-mcp/scripts/stdio-forced-command.sh owner" ssh-ed25519 OWNER_PUBLIC_KEY owner-claude-mcp
+restrict,command="/opt/claude-research-mcp/scripts/stdio-forced-command.sh partner" ssh-ed25519 PARTNER_PUBLIC_KEY partner-claude-mcp
