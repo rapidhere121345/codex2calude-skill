@@ -1,0 +1,10 @@
+interface:
+  display_name: "Claude Research"
+  short_description: "Use remote Claude Code for research and follow-up"
+  default_prompt: "Use $claude-research to ask Claude for a researched second opinion and continue the same task session."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "claude_research"
+      description: "Restricted remote Claude Code research bridge"

@@ -15,6 +15,24 @@ The bridge exposes exactly five tools:
 - `claude_close(conversation_id)` — close the bridge mapping. It does not erase
   the Claude-side transcript.
 
+## Hand this repository to another Codex
+
+Send the other user the GitHub URL and this prompt:
+
+```text
+请使用 $skill-installer 从
+https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/claude-research
+安装 claude-research Skill。安装后遵循 SKILL.md 的 First-time client setup，
+运行 setup_client.py 完成本机配置。只能向我显示新生成的 .pub 公钥，绝对不要
+读取、显示或上传私钥。输出公钥后等待服务器管理员确认授权，再运行 --verify；
+验证成功后提醒我重启 Codex。
+```
+
+The partner needs read access to this GitHub repository if it is private. The
+setup is otherwise local and does not require Tailscale. One deliberate
+out-of-band step remains: the server administrator must add the generated public
+key. There is no public self-enrollment endpoint.
+
 ## Conversation and model policy
 
 Use one Claude session per logical task. `claude_start` stores the native Claude
