@@ -141,11 +141,13 @@ def child_environment() -> dict[str, str]:
     result["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     result["CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL"] = "1"
     result["DISABLE_AUTOUPDATER"] = "1"
+    result["DISABLE_UPDATES"] = "1"
     result["DISABLE_ERROR_REPORTING"] = "1"
     result["DISABLE_FEEDBACK_COMMAND"] = "1"
     result["DISABLE_TELEMETRY"] = "1"
     result["DO_NOT_TRACK"] = "1"
     result["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] = "1"
+    result["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
     return result
 
 

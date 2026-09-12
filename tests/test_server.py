@@ -78,11 +78,13 @@ def test_child_environment_is_minimal_and_disables_nonessential_traffic(
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL": "1",
         "DISABLE_AUTOUPDATER": "1",
+        "DISABLE_UPDATES": "1",
         "DISABLE_ERROR_REPORTING": "1",
         "DISABLE_FEEDBACK_COMMAND": "1",
         "DISABLE_TELEMETRY": "1",
         "DO_NOT_TRACK": "1",
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
     }
 
 

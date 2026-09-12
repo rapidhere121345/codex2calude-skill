@@ -125,7 +125,7 @@ manual check.
   variables removed. Claude Code's documented
   [privacy environment controls](https://code.claude.com/docs/en/env-vars)
   disable nonessential telemetry, feedback, crash reporting, marketplace
-  auto-install, and auto-update traffic.
+  auto-install, all CLI updates, and Claude.ai MCP connector loading.
 - Only MCP/Claude traffic originates from the VPS. A partner's source address
   is visible to the VPS SSH daemon and its logs, but is not forwarded in the
   Claude child environment. Prompts, pasted identifiers, and URLs can still
