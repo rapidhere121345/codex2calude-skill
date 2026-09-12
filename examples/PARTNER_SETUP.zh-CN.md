@@ -3,7 +3,30 @@
 这个入口直接走公网 SSH stdio，不需要安装或加入 Tailscale。它只允许调用
 Claude Research MCP，不提供服务器 Shell、文件访问、桌面或端口转发。
 
-## 1. 在你自己的电脑生成独立密钥
+## 首选：运行已安装 Skill 的自动配置
+
+以下命令必须在已安装的 `claude-research` Skill 目录中运行：
+
+```sh
+python3 scripts/setup_client.py
+```
+
+脚本会生成本机专用密钥、固定服务器主机密钥，并把受限 MCP 配置写入你的
+Codex 配置。它只会显示 `.pub` 公钥；不要读取、显示或发送私钥。把公钥交给
+服务器管理员并等待授权，然后运行：
+
+```sh
+python3 scripts/setup_client.py --verify
+```
+
+验证通过后重启 Codex。若自动配置成功，不要再执行下面的手动 fallback，
+以免产生两套密钥或配置。
+
+## 手动 fallback
+
+只有在无法运行已安装 Skill 的自动配置脚本时才使用以下步骤。
+
+### Fallback 1. 在你自己的电脑生成独立密钥
 
 Linux/macOS：
 
@@ -18,7 +41,7 @@ ssh-keygen -t ed25519 -a 100 -f ~/.ssh/claude_mcp_partner_ed25519
 ~/.ssh/claude_mcp_partner_ed25519.pub
 ```
 
-## 2. 固定服务器主机密钥
+### Fallback 2. 固定服务器主机密钥
 
 管理员确认你的公钥已加入后，创建
 `~/.ssh/claude_mcp_known_hosts`，内容必须是：
@@ -35,7 +58,7 @@ SHA256:YVHHRs5TyOc5v1vkGZ40vW6jaDyULwM8LQeywygLH/Q
 
 如果 SSH 显示其他指纹或提示主机密钥变化，请停止连接并联系管理员。
 
-## 3. 加入 Codex 配置
+### Fallback 3. 加入 Codex 配置
 
 把以下内容加入 `~/.codex/config.toml`；Windows 用户把路径替换成自己电脑上
 私钥和 `known_hosts` 文件的绝对路径。
@@ -80,7 +103,7 @@ enabled_tools = [
   不代表尚未使用或额度无限；这里显示的是两人共用账户的额度，不是 partner
   独享额度
 
-## 4. 会话用法
+## 会话用法
 
 - 独立问题：`claude_once`
 - 新任务：`claude_start`（可给一个简短的人类可读标题），保存返回的

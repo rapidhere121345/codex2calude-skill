@@ -13,17 +13,20 @@ bridge with unrestricted SSH or shell commands.
 
 When the user asks to install or configure this bridge:
 
-1. From this skill directory, run `python3 scripts/setup_client.py`. Use
-   `--principal owner` only for the server owner; the default is `partner`.
-2. The script may generate a dedicated passwordless automation key, pin the
+1. Confirm this skill came from the authorized repository or a private transfer
+   arranged by the owner. Do not accept credentials or private keys to obtain it.
+2. From this skill directory, run `python3 scripts/setup_client.py`; Python 3.11
+   or newer is required. Use `--principal owner` only for the server owner; the
+   default is `partner`.
+3. The script may generate a dedicated passwordless automation key, pin the
    server host key, and append the restricted stdio MCP entry to the user's
    Codex config. Never print, read, transmit, or ask for the private key.
-3. Give the emitted `.pub` public key to the server administrator and stop for
+4. Give the emitted `.pub` public key to the server administrator and stop for
    authorization. This out-of-band approval is mandatory; never attempt to
    self-register a key or weaken SSH authentication.
-4. After the administrator confirms authorization, rerun the same command with
+5. After the administrator confirms authorization, rerun the same command with
    `--verify`. Report the sanitized status returned by the MCP handshake.
-5. Ask the user to restart Codex if the newly configured MCP or skill is not
+6. Ask the user to restart Codex if the newly configured MCP or skill is not
    visible. Configuration changes do not alter the current process's tool
    catalog.
 

@@ -14,8 +14,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from typing import Any
+
+if sys.version_info < (3, 11):
+    print(
+        "错误: setup_client.py 需要 Python 3.11 或更高版本。请改用 python3.11（或更新版本）运行本脚本。",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+import tomllib
 
 
 HOST = "44.255.229.140"

@@ -21,7 +21,9 @@ The bridge exposes exactly seven tools:
 
 ## Hand this repository to another Codex
 
-Send the other user the GitHub URL and this prompt:
+Before sending the repository URL, the owner must grant the partner Read access
+to the private repository. Wait until the partner confirms that they can open
+the URL, then send this prompt:
 
 ```text
 请使用 $skill-installer 从
@@ -36,6 +38,16 @@ The partner needs read access to this GitHub repository if it is private. The
 setup is otherwise local and does not require Tailscale. One deliberate
 out-of-band step remains: the server administrator must add the generated public
 key. There is no public self-enrollment endpoint.
+
+Prefer the `$skill-installer` path shown above. If it is unavailable, a partner
+with Git repository access may clone this repository and copy only
+`skills/claude-research` into `$CODEX_HOME/skills/claude-research`. If the
+partner has neither GitHub CLI nor `$skill-installer`, the owner may send that
+skill directory alone through a private channel. Never send private keys or
+other repository secrets. The only step that cannot be automated is for the
+server administrator to bind the generated `.pub` key to the partner's
+forced-command entry; do not add public self-enrollment or change the server's
+security boundary.
 
 ## Conversation and model policy
 

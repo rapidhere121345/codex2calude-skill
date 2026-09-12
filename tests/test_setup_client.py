@@ -141,6 +141,24 @@ def test_parse_args_resolves_default_codex_home(monkeypatch, tmp_path: Path) -> 
     assert args.codex_home == codex_home.resolve()
 
 
+def test_python_below_3_11_fails_without_traceback() -> None:
+    code = (
+        "import runpy, sys; "
+        "sys.version_info = (3, 10, 0); "
+        f"runpy.run_path({str(SETUP_PATH)!r}, run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "需要 Python 3.11" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def mock_verify(
     monkeypatch: pytest.MonkeyPatch,
     *,
