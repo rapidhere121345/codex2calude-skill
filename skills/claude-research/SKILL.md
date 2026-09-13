@@ -96,6 +96,11 @@ the current SSH principal. Verification must expose exactly these seven tools:
   credentials, private keys, tokens, or unrelated private context.
 - Calls share one Claude subscription and may queue. Avoid redundant retries;
   report a timeout or quota error instead of silently opening a new session.
+- The bridge has no hourly call quota. Rapid continues are guarded per
+  principal and conversation (default: 50 reservations in 60 seconds); if
+  blocked, report the burst error and wait for the rolling window instead of
+  retrying or creating a replacement conversation. A blocked attempt does not
+  count toward later burst checks.
 
 ## Present the result
 

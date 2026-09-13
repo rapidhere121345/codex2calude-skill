@@ -36,7 +36,7 @@ from .executor import (
 )
 from .locking import concurrency_slot
 from .persistence import (
-    RateLimitError,
+    ContinueBurstLimitError,
     SessionOwnershipError,
     attach_claude_session,
     close_conversation,
@@ -448,7 +448,6 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_status",
                 conversation_id=None,
                 model="-",
-                rate_limit=settings.rate_limit,
             )
             raw = await _run(
                 settings,
@@ -524,16 +523,6 @@ def create_app(settings: Settings) -> FastMCP:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             return result
-        except RateLimitError as exc:
-            record_audit_event(
-                settings.database_path,
-                principal=settings.principal,
-                tool="claude_status",
-                conversation_id=None,
-                model=None,
-                status="rate_limited",
-            )
-            raise ConfigurationError(str(exc)) from exc
         except BaseException as exc:
             if audit is not None:
                 finish_call(
@@ -599,7 +588,6 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_once",
                 conversation_id=None,
                 model=logical_model,
-                rate_limit=settings.rate_limit,
             )
             parsed, actual_models = await _execute_new(
                 clean_prompt, logical_model, clean_web, clean_turns, clean_timeout
@@ -618,16 +606,6 @@ def create_app(settings: Settings) -> FastMCP:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             return result
-        except RateLimitError as exc:
-            record_audit_event(
-                settings.database_path,
-                principal=settings.principal,
-                tool="claude_once",
-                conversation_id=None,
-                model=None,
-                status="rate_limited",
-            )
-            raise ConfigurationError(str(exc)) from exc
         except BaseException as exc:
             if audit is not None:
                 finish_call(
@@ -668,7 +646,6 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_start",
                 conversation_id=None,
                 model=logical_model,
-                rate_limit=settings.rate_limit,
             )
             record = create_conversation(
                 settings.database_path,
@@ -714,16 +691,6 @@ def create_app(settings: Settings) -> FastMCP:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             return result
-        except RateLimitError as exc:
-            record_audit_event(
-                settings.database_path,
-                principal=settings.principal,
-                tool="claude_start",
-                conversation_id=None,
-                model=logical_model,
-                status="rate_limited",
-            )
-            raise ConfigurationError(str(exc)) from exc
         except BaseException as exc:
             status = "timeout" if "timed out" in str(exc) else "error"
             duration_ms = int((time.monotonic() - start) * 1000)
@@ -763,6 +730,8 @@ def create_app(settings: Settings) -> FastMCP:
         """Continue an owned conversation with its stored model and web policy."""
         start = time.monotonic()
         audit: int | None = None
+        clean_conversation: str | None = None
+        logical_model: str | None = None
         try:
             clean_conversation = validate_conversation_id(conversation_id)
             clean_prompt = validate_prompt(prompt, settings.prompt_limit)
@@ -787,7 +756,10 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_continue",
                 conversation_id=clean_conversation,
                 model=logical_model,
-                rate_limit=settings.rate_limit,
+                continue_burst_limit=settings.continue_burst_limit,
+                continue_burst_window_seconds=(
+                    settings.continue_burst_window_seconds
+                ),
             )
             command = build_ask_command(
                 settings,
@@ -829,14 +801,14 @@ def create_app(settings: Settings) -> FastMCP:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             return result
-        except RateLimitError as exc:
+        except ContinueBurstLimitError as exc:
             record_audit_event(
                 settings.database_path,
                 principal=settings.principal,
                 tool="claude_continue",
-                conversation_id=None,
-                model=None,
-                status="rate_limited",
+                conversation_id=clean_conversation,
+                model=logical_model,
+                status="burst_limited",
             )
             raise ConfigurationError(str(exc)) from exc
         except BaseException as exc:
@@ -903,7 +875,6 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_list_conversations",
                 conversation_id=None,
                 model="-",
-                rate_limit=settings.rate_limit,
             )
             summaries, total, has_more = list_conversations(
                 settings.database_path,
@@ -938,16 +909,6 @@ def create_app(settings: Settings) -> FastMCP:
                 "has_more": has_more,
                 "conversations": items,
             }
-        except RateLimitError as exc:
-            record_audit_event(
-                settings.database_path,
-                principal=settings.principal,
-                tool="claude_list_conversations",
-                conversation_id=None,
-                model=None,
-                status="rate_limited",
-            )
-            raise ConfigurationError(str(exc)) from exc
         except BaseException as exc:
             if audit is not None:
                 finish_call(
@@ -996,7 +957,6 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_export_conversation",
                 conversation_id=owned_conversation,
                 model="-",
-                rate_limit=settings.rate_limit,
             )
             messages = _read_transcript(
                 settings.principal_work_dir, claude_session_id
@@ -1016,16 +976,6 @@ def create_app(settings: Settings) -> FastMCP:
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
             return result
-        except RateLimitError as exc:
-            record_audit_event(
-                settings.database_path,
-                principal=settings.principal,
-                tool="claude_export_conversation",
-                conversation_id=owned_conversation,
-                model=None,
-                status="rate_limited",
-            )
-            raise ConfigurationError(str(exc)) from exc
         except BaseException as exc:
             if audit is not None:
                 finish_call(

@@ -12,6 +12,8 @@ def test_forced_command_uses_root_owned_release_and_empty_environment() -> None:
     assert "/opt/claude-research-mcp/.venv/bin/claude-research-mcp" not in wrapper
     assert "HOME=/var/lib/claude-mcp" in wrapper
     assert "CLAUDE_BIN=/opt/claude-code/2.1.236/claude" in wrapper
+    assert "CLAUDE_MCP_CONTINUE_BURST_LIMIT=50" in wrapper
+    assert "CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS=60" in wrapper
     assert "DISABLE_UPDATES=1" in wrapper
     assert "ENABLE_CLAUDEAI_MCP_SERVERS=false" in wrapper
     assert "SSH_ORIGINAL_COMMAND" not in wrapper

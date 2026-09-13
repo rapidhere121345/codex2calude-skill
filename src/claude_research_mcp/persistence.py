@@ -1,4 +1,4 @@
-"""SQLite mappings, rolling quotas, and minimal audit records."""
+"""SQLite mappings, continue-loop protection, and minimal audit records."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ class SessionOwnershipError(PermissionError):
     """The conversation belongs to another principal."""
 
 
-class RateLimitError(RuntimeError):
-    """The principal exhausted its rolling hourly quota."""
+class ContinueBurstLimitError(RuntimeError):
+    """The principal continued one conversation too rapidly."""
 
 
 @dataclass(frozen=True)
@@ -87,8 +87,6 @@ def initialize(database_path: Path) -> None:
               created_at TEXT NOT NULL,
               FOREIGN KEY(conversation_id) REFERENCES conversations(conversation_id)
             );
-            CREATE INDEX IF NOT EXISTS audit_quota_window
-              ON audit_log(principal, created_at);
             """
         )
         # Serialize the column check + ALTER sequence across independently
@@ -124,6 +122,11 @@ def initialize(database_path: Path) -> None:
         db.execute(
             "CREATE INDEX IF NOT EXISTS conversations_principal_activity "
             "ON conversations(principal, last_activity_at, conversation_id)"
+        )
+        db.execute("DROP INDEX IF EXISTS audit_quota_window")
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS audit_continue_burst_window "
+            "ON audit_log(principal, conversation_id, tool, status, created_at)"
         )
 
 
@@ -289,18 +292,38 @@ def reserve_call(
     tool: str,
     conversation_id: str | None,
     model: str,
-    rate_limit: int,
+    continue_burst_limit: int | None = None,
+    continue_burst_window_seconds: int | None = None,
 ) -> int:
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
     with transaction(database_path) as db:
         db.execute("BEGIN IMMEDIATE")
-        used = db.execute(
-            "SELECT COUNT(*) FROM audit_log "
-            "WHERE principal = ? AND created_at > ? AND status != 'rate_limited'",
-            (principal, cutoff),
-        ).fetchone()[0]
-        if used >= rate_limit:
-            raise RateLimitError(f"hourly limit reached ({rate_limit} calls)")
+        # Compute the rolling boundary only after acquiring the write lock. A
+        # concurrent reservation may otherwise make a pre-lock timestamp stale.
+        now = datetime.now(timezone.utc)
+        if tool == "claude_continue":
+            if (
+                conversation_id is None
+                or continue_burst_limit is None
+                or continue_burst_window_seconds is None
+            ):
+                raise ValueError("continue burst policy is required")
+            burst_cutoff = (
+                now - timedelta(seconds=continue_burst_window_seconds)
+            ).isoformat()
+            burst_used = db.execute(
+                "SELECT COUNT(*) FROM audit_log "
+                "WHERE principal = ? AND conversation_id = ? "
+                "AND tool = 'claude_continue' "
+                "AND status IN ('running', 'success', 'error', 'timeout') "
+                "AND created_at > ?",
+                (principal, conversation_id, burst_cutoff),
+            ).fetchone()[0]
+            if burst_used >= continue_burst_limit:
+                raise ContinueBurstLimitError(
+                    "continue burst limit reached "
+                    f"({continue_burst_limit} calls in "
+                    f"{continue_burst_window_seconds} seconds)"
+                )
         cursor = db.execute(
             "INSERT INTO audit_log "
             "(principal, tool, conversation_id, model, status, duration_ms, created_at) "

@@ -12,7 +12,9 @@ import subprocess
 from .config import Settings
 
 
-DEFAULT_MAX_TURNS = 8
+# Web research commonly needs more than eight search/fetch rounds. This remains
+# a per-invocation safety bound, not a bridge call quota.
+DEFAULT_MAX_TURNS = 20
 DEFAULT_TIMEOUT_SECONDS = 600
 MIN_MAX_TURNS = 1
 MAX_MAX_TURNS = 100

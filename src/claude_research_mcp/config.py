@@ -46,7 +46,8 @@ class Settings:
     lock_dir: Path
     models: dict[str, ModelPolicy]
     prompt_limit: int
-    rate_limit: int
+    continue_burst_limit: int
+    continue_burst_window_seconds: int
     concurrency: int
     output_limit: int
     result_limit: int
@@ -195,12 +196,19 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
             1,
             200_000,
         ),
-        rate_limit=_bounded_int(
-            source.get("CLAUDE_MCP_RATE_LIMIT_PER_HOUR"),
-            "CLAUDE_MCP_RATE_LIMIT_PER_HOUR",
-            20,
+        continue_burst_limit=_bounded_int(
+            source.get("CLAUDE_MCP_CONTINUE_BURST_LIMIT"),
+            "CLAUDE_MCP_CONTINUE_BURST_LIMIT",
+            50,
             1,
-            1_000,
+            100,
+        ),
+        continue_burst_window_seconds=_bounded_int(
+            source.get("CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS"),
+            "CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS",
+            60,
+            1,
+            3_600,
         ),
         concurrency=_bounded_int(
             source.get("CLAUDE_MCP_CONCURRENCY"),

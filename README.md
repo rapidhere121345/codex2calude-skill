@@ -111,7 +111,9 @@ manual check.
   `false` enables no Claude tools.
 - Calls run in new process groups. Timeouts and cancellation stop Claude and
   its descendants.
-- SQLite enforces principal ownership and rolling per-principal quotas. A
+- SQLite enforces principal ownership. A per-principal, per-conversation
+  rolling burst guard protects rapid `claude_continue` calls; the guard check
+  and execution reservation happen in one SQLite write transaction. A
   process-wide flock limits shared-account concurrency.
 - Responses and diagnostics are bounded. Raw Claude stderr is not returned.
 - Quota status never reads OAuth credentials and never calls an undocumented
@@ -272,4 +274,9 @@ other key and Claude login do not need to change.
 ```
 
 Configuration is via `CLAUDE_MCP_*`; see `scripts/stdio-forced-command.sh` for
-the production defaults. Large package caches remain inside the project.
+the production defaults. There is no hourly bridge call quota.
+`CLAUDE_MCP_CONTINUE_BURST_LIMIT` defaults to 50 and is bounded to 1–100;
+`CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS` defaults to 60 and is bounded to
+1–3600 seconds. The burst guard is isolated by principal and MCP conversation;
+blocked attempts are audited but do not enter the rolling count. Large package
+caches remain inside the project.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -31,7 +33,7 @@ from claude_research_mcp.executor import (
 )
 from claude_research_mcp.locking import concurrency_slot
 from claude_research_mcp.persistence import (
-    RateLimitError,
+    ContinueBurstLimitError,
     SessionOwnershipError,
     close_conversation,
     create_conversation,
@@ -98,7 +100,6 @@ def make_settings(tmp_path: Path, principal: str = "owner", **overrides):
         "CLAUDE_MCP_WORK_ROOT": str(work),
         "CLAUDE_MCP_PRINCIPAL": principal,
         "CLAUDE_BIN": str(binary),
-        "CLAUDE_MCP_RATE_LIMIT_PER_HOUR": "20",
     }
     env.update({key: str(value) for key, value in overrides.items()})
     return load_settings(env)
@@ -161,6 +162,22 @@ def test_configuration_and_input_validation(tmp_path):
     settings = make_settings(tmp_path, CLAUDE_MCP_PROMPT_LIMIT="10")
     assert settings.principal == "owner"
     assert list(settings.models) == ["opus"]
+    assert settings.continue_burst_limit == 50
+    assert settings.continue_burst_window_seconds == 60
+    minimum_burst = make_settings(
+        tmp_path,
+        CLAUDE_MCP_CONTINUE_BURST_LIMIT="1",
+        CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS="1",
+    )
+    assert minimum_burst.continue_burst_limit == 1
+    assert minimum_burst.continue_burst_window_seconds == 1
+    maximum_burst = make_settings(
+        tmp_path,
+        CLAUDE_MCP_CONTINUE_BURST_LIMIT="100",
+        CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS="3600",
+    )
+    assert maximum_burst.continue_burst_limit == 100
+    assert maximum_burst.continue_burst_window_seconds == 3600
     assert validate_model(None, settings) == "opus"
     with pytest.raises(ConfigurationError, match="model is unavailable"):
         validate_model("fable", settings)
@@ -176,6 +193,14 @@ def test_configuration_and_input_validation(tmp_path):
     fable = '{"opus":{"cli_value":"opus","family":"opus"},"fable":{"cli_value":"fable","family":"fable","min_cli_version":"2.1.257"}}'
     enabled = make_settings(tmp_path, CLAUDE_MCP_MODELS=fable)
     assert enabled.models["fable"].min_cli_version == (2, 1, 257)
+    for name, value in (
+        ("CLAUDE_MCP_CONTINUE_BURST_LIMIT", "0"),
+        ("CLAUDE_MCP_CONTINUE_BURST_LIMIT", "101"),
+        ("CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS", "0"),
+        ("CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS", "3601"),
+    ):
+        with pytest.raises(ConfigurationError, match=f"invalid {name}"):
+            make_settings(tmp_path, **{name: value})
 
 
 def test_fixed_command_and_prompt_never_in_argv(tmp_path):
@@ -223,6 +248,8 @@ def test_five_tools_once_start_continue_close_and_principal_isolation(tmp_path):
     once = asyncio.run(get_tool(app, "claude_once")("once secret prompt", model="opus", use_web=True))
     assert once["actual_models"] == ["claude-haiku-4-5", "claude-opus-5"]
     assert once["model_usage"][1] == {"model": "claude-opus-5", "input_tokens": 11, "output_tokens": 22}
+    once_argv = Path(str(settings.claude_bin) + ".argv").read_text().splitlines()
+    assert once_argv[once_argv.index("--max-turns") + 1] == "20"
     assert "once secret prompt" not in Path(str(settings.claude_bin) + ".argv").read_text()
     assert Path(str(settings.claude_bin) + ".stdin").read_text() == "once secret prompt"
 
@@ -266,6 +293,9 @@ def test_schema_migration_and_conversation_list_metadata(tmp_path):
             "REFERENCES conversations(conversation_id))"
         )
         connection.execute(
+            "CREATE INDEX audit_quota_window ON audit_log(principal, created_at)"
+        )
+        connection.execute(
             "INSERT INTO conversations VALUES "
             "(?, 'owner', NULL, 'opus', 1, ?, NULL)",
             ("01935555-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "2026-01-01T00:00:00+00:00"),
@@ -296,7 +326,11 @@ def test_schema_migration_and_conversation_list_metadata(tmp_path):
             "SELECT conversation_id, last_activity_at FROM conversations "
             "ORDER BY conversation_id"
         ).fetchall()
+        audit_indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(audit_log)")
+        }
     assert {"title", "last_activity_at"} <= columns
+    assert "audit_quota_window" not in audit_indexes
     assert migrated_activity == [
         (
             "01935555-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -564,14 +598,20 @@ def test_export_rejects_malformed_oversized_and_path_surprises(tmp_path, monkeyp
         asyncio.run(get_tool(app, "claude_export_conversation")(conversation))
 
 
-def test_history_tools_use_the_principal_rate_limit(tmp_path):
-    settings = make_settings(tmp_path, CLAUDE_MCP_RATE_LIMIT_PER_HOUR="1")
+def test_no_hourly_bridge_quota_setting_or_twenty_call_limit(tmp_path):
+    settings = make_settings(tmp_path)
+    assert not hasattr(settings, "rate_limit")
+    fake_claude(settings.claude_bin)
     app = create_app(settings)
 
-    first = asyncio.run(get_tool(app, "claude_list_conversations")())
-    assert first["status"] == "ok"
-    with pytest.raises(ConfigurationError, match="hourly limit reached"):
-        asyncio.run(get_tool(app, "claude_list_conversations")())
+    for index in range(25):
+        assert asyncio.run(get_tool(app, "claude_once")(f"inference {index}"))["status"] == "ok"
+
+    with sqlite3.connect(settings.database_path) as connection:
+        rows = connection.execute(
+            "SELECT tool, status FROM audit_log ORDER BY id"
+        ).fetchall()
+    assert rows == [("claude_once", "success")] * 25
 
 
 def test_status_and_fable_version_gate(tmp_path):
@@ -684,7 +724,7 @@ def test_model_family_absence_is_rejected_not_silently_ignored():
         _assert_requested_family(parsed, "opus")
 
 
-def test_limit_output_timeout_kills_group_concurrency_and_rate(tmp_path):
+def test_limit_output_timeout_kills_group_and_concurrency(tmp_path):
     settings = make_settings(tmp_path)
     from claude_research_mcp.executor import truncate_text
 
@@ -714,16 +754,127 @@ def test_limit_output_timeout_kills_group_concurrency_and_rate(tmp_path):
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(attempt())
 
-    database = tmp_path / "quota.sqlite3"
+def test_continue_burst_guard_is_per_principal_conversation_and_transactional(
+    tmp_path,
+):
+    database = tmp_path / "burst.sqlite3"
     initialize(database)
-    reserve_call(database, principal="owner", tool="claude_once", conversation_id=None, model="opus", rate_limit=1)
-    with pytest.raises(RateLimitError):
-        reserve_call(database, principal="owner", tool="claude_once", conversation_id=None, model="opus", rate_limit=1)
-    reserve_call(database, principal="partner", tool="claude_once", conversation_id=None, model="opus", rate_limit=1)
+    first = create_conversation(database, "owner", "opus", False)
+    second = create_conversation(database, "owner", "opus", False)
+
+    def reserve(principal="owner", conversation_id=first.conversation_id):
+        return reserve_call(
+            database,
+            principal=principal,
+            tool="claude_continue",
+            conversation_id=conversation_id,
+            model="opus",
+            continue_burst_limit=4,
+            continue_burst_window_seconds=60,
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(reserve) for _ in range(8)]
+    results = []
+    blocked = []
+    for future in futures:
+        try:
+            results.append(future.result())
+        except ContinueBurstLimitError as exc:
+            blocked.append(str(exc))
+    assert len(results) == 4
+    assert len(blocked) == 4
+    assert set(blocked) == {"continue burst limit reached (4 calls in 60 seconds)"}
+
+    reserve(conversation_id=second.conversation_id)
+    reserve(principal="partner")
+    old = (datetime.now(timezone.utc) - timedelta(seconds=61)).isoformat()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE audit_log SET created_at = ? "
+            "WHERE principal = 'owner' AND conversation_id = ?",
+            (old, first.conversation_id),
+        )
+    reserve()
+
+
+def test_blocked_continue_burst_is_sanitized_audited_and_does_not_poison_window(
+    tmp_path,
+):
+    settings = make_settings(
+        tmp_path,
+        CLAUDE_MCP_CONTINUE_BURST_LIMIT="1",
+        CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS="60",
+    )
+    fake_claude(settings.claude_bin)
+    app = create_app(settings)
+    started = asyncio.run(get_tool(app, "claude_start")("start"))
+    conversation = started["conversation_id"]
+    asyncio.run(get_tool(app, "claude_continue")(conversation, "first continue"))
+
+    secret = "secret-burst-prompt"
+    with pytest.raises(
+        ConfigurationError,
+        match=r"continue burst limit reached \(1 calls in 60 seconds\)",
+    ) as caught:
+        asyncio.run(get_tool(app, "claude_continue")(conversation, secret))
+    assert secret not in str(caught.value)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        burst_rows = connection.execute(
+            "SELECT principal, tool, conversation_id, model, status "
+            "FROM audit_log WHERE status = 'burst_limited'"
+        ).fetchall()
+        stored = json.dumps(
+            connection.execute("SELECT * FROM audit_log").fetchall()
+        )
+    assert burst_rows == [
+        ("owner", "claude_continue", conversation, "opus", "burst_limited")
+    ]
+    assert secret not in stored
+
+    old = (datetime.now(timezone.utc) - timedelta(seconds=61)).isoformat()
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            "UPDATE audit_log SET created_at = ? "
+            "WHERE tool = 'claude_continue' AND status = 'success'",
+            (old,),
+        )
+    assert (
+        asyncio.run(get_tool(app, "claude_continue")(conversation, "after window"))[
+            "status"
+        ]
+        == "ok"
+    )
+
+
+def test_reserved_continue_failure_counts_toward_burst_guard(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        CLAUDE_MCP_CONTINUE_BURST_LIMIT="1",
+        CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS="60",
+    )
+    fake_claude(settings.claude_bin)
+    app = create_app(settings)
+    conversation = asyncio.run(get_tool(app, "claude_start")("start"))[
+        "conversation_id"
+    ]
+
+    fake_claude(settings.claude_bin, fail=True)
+    with pytest.raises(ExecutionError, match="Claude CLI failed"):
+        asyncio.run(get_tool(app, "claude_continue")(conversation, "fails after reserve"))
+    with pytest.raises(ConfigurationError, match="continue burst limit reached"):
+        asyncio.run(get_tool(app, "claude_continue")(conversation, "blocked next"))
+
+    with sqlite3.connect(settings.database_path) as connection:
+        statuses = connection.execute(
+            "SELECT status FROM audit_log WHERE tool = 'claude_continue' ORDER BY id"
+        ).fetchall()
+    assert statuses == [("error",), ("burst_limited",)]
 
 
 def test_sensitive_failure_and_audit_never_store_prompt_or_output(tmp_path):
-    settings = make_settings(tmp_path, CLAUDE_MCP_RATE_LIMIT_PER_HOUR="1")
+    settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin, fail=True)
     app = create_app(settings)
     prompt = "this-is-a-secret-research-prompt"
