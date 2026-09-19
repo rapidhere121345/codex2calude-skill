@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+import json
 import os
 from pathlib import Path
 import signal
@@ -25,6 +26,146 @@ EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
 
 class ExecutionError(RuntimeError):
     """A sanitized execution failure."""
+
+
+ERROR_CATEGORIES = (
+    "auth",
+    "rate_limit",
+    "model_unavailable",
+    "permission",
+    "network",
+    "invalid_argument",
+    "runtime",
+    "unknown",
+)
+
+
+class ClaudeResultError(ExecutionError):
+    """A sanitized error reported by the CLI."""
+
+    def __init__(
+        self, category: str, http_status: int | None = None, exit_code: int | None = None
+    ):
+        self.category = category if category in ERROR_CATEGORIES else "unknown"
+        self.http_status = (
+            http_status
+            if type(http_status) is int and http_status in _HTTP_STATUS_CATEGORIES
+            else None
+        )
+        self.exit_code = (
+            exit_code if type(exit_code) is int and -255 <= exit_code <= 255 else None
+        )
+        prefix = "Claude CLI returned a sanitized error"
+        if self.exit_code is not None:
+            prefix = f"Claude CLI failed with exit code {self.exit_code}: {prefix}"
+        suffix = f" (category: {self.category}"
+        suffix += (
+            f", http_status: {self.http_status})" if self.http_status is not None else ")"
+        )
+        super().__init__(prefix + suffix)
+
+# Only these structured names are inspected in bounded stdout.  Values are
+# never copied into responses; they are used solely to select a category.
+_ERROR_TYPE_FIELDS = ("type", "subtype", "error", "error.type", "error.name")
+_ERROR_MESSAGE_FIELDS = ("error.message", "error.msg")
+_ERROR_ITEM_FIELDS = ("message", "msg", "type", "name")
+_ERROR_STATUS_FIELDS = (
+    "error.status",
+    "error.status_code",
+    "error.statusCode",
+    "error.http_status",
+)
+_MAX_ERROR_JSON_CHARS = 16_384
+_MAX_ERROR_TEXT_CHARS = 2_048
+_MAX_ERROR_ITEMS = 16
+_GENERIC_CATEGORY = "runtime"
+
+# Exact lowercase SDK/API values, matched without inferring from arbitrary
+# prose.  Result subtype values are expected to arrive through error.type.
+_ERROR_TYPES: dict[str, str] = {
+    "invalid_request_error": "invalid_argument",
+    "authentication_error": "auth",
+    "authenticationerror": "auth",
+    "permission_error": "permission",
+    "permissionerror": "permission",
+    "not_found_error": "runtime",
+    "model_not_found_error": "model_unavailable",
+    "rate_limit_error": "rate_limit",
+    "ratelimiterror": "rate_limit",
+    "too_many_requests": "rate_limit",
+    "requesterrortimeout": "network",
+    "api_error": "runtime",
+    "apierror": "runtime",
+    "overloaded_error": "runtime",
+    "error_during_response": "runtime",
+    "timeouterror": "runtime",
+    "value_error": "invalid_argument",
+}
+
+# Fixed phrases accepted inside a confirmed is_error result/errors envelope.
+# They select an enum only; no source text, numbers, paths, or identifiers are
+# returned.  More specific evidence takes precedence over generic API errors.
+_ERROR_TEXT_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("authentication_error", "authentication error", "oauth token expired"), "auth"),
+    (("rate limit reached", "rate limit exceeded", "you've hit your limit", "usage limit reached"), "rate_limit"),
+    (("model not found", "model is unavailable", "model is not available"), "model_unavailable"),
+    (("permission denied", "permission error", "permission_error", "forbidden", "access denied", "request not allowed"), "permission"),
+    (("invalid request error", "invalid request"), "invalid_argument"),
+    (("connection error", "network error", "request timed out"), "network"),
+    (("api error", "temporarily overloaded"), "runtime"),
+)
+_ERROR_MESSAGES = {phrase: category for phrases, category in _ERROR_TEXT_RULES for phrase in phrases}
+
+# Bounded, exact stderr fragments.  They classify diagnostics without echoing
+# them.  Unknown or ambiguous output remains unknown.
+_STDERR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("not logged in", "authentication error", "authentication failed", "invalid api key", "login required"), "auth"),
+    (("rate limit error", "rate limit exceeded", "rate_limit_error"), "rate_limit"),
+    (("model not found", "model is unavailable", "model is not available", "model is unsupported", "model is not supported"), "model_unavailable"),
+    (("permission denied", "permission error", "permission_error", "permission mode", "forbidden", "access denied", "request not allowed"), "permission"),
+    (("network error", "temporary network failure", "connection refused", "connection reset", "connection closed", "connection error", "econnrefused", "econnreset", "enotfound", "etimedout", "fetch failed", "socket disconnected", "network is unreachable"), "network"),
+    (("invalid argument", "invalid option", "invalid flag", "unknown option", "unknown flag", "invalid value"), "invalid_argument"),
+)
+
+_HTTP_STATUS_CATEGORIES: dict[int, str] = {
+    400: "invalid_argument", 401: "auth", 403: "permission", 404: "runtime",
+    408: "runtime", 413: "invalid_argument", 422: "invalid_argument",
+    429: "rate_limit", 500: "runtime", 502: "network", 503: "runtime", 504: "network",
+}
+
+
+def classify_claude_error(stdout: str, stderr: str = "") -> tuple[str, int | None]:
+    """Classify a Claude failure with stdout structured evidence first."""
+
+    category, status = _structured_error_category(stdout)
+    if category == "unknown":
+        category = _stderr_category(stderr)
+    return category, status
+
+
+def _is_error_envelope(payload: dict[object, object]) -> bool:
+    return (
+        payload.get("is_error") is True
+        or isinstance(payload.get("error"), dict)
+        or payload.get("type") == "error"
+    )
+
+
+def _text_error_category(value: str) -> tuple[str | None, str | None]:
+    normalized = " ".join(value.casefold().translate(str.maketrans({
+        "\u2019": "'", "\u2018": "'", "\u02bc": "'", "\uff07": "'",
+    })).split())
+    specific: str | None = None
+    generic: str | None = None
+    for phrases, category in _ERROR_TEXT_RULES:
+        if not any(phrase in normalized for phrase in phrases):
+            continue
+        if category == _GENERIC_CATEGORY:
+            generic = generic or category
+        else:
+            specific = category
+            break
+    return specific, generic
 
 
 @dataclass(frozen=True)
@@ -107,22 +248,121 @@ def truncate_text(value: str, limit: int) -> str:
     return value[: max(1, limit - len(marker))] + marker
 
 
-def _sanitize_error(stderr: str) -> str:
-    """Classify a failure without returning untrusted CLI diagnostics.
+def _get_path(payload: object, path: str, depth: int = 2) -> object:
+    """Return a value from a small, explicitly named JSON path."""
+
+    if depth < 0:
+        return None
+    if path.startswith("error."):
+        child = payload.get("error") if isinstance(payload, dict) else None
+        return _get_path(child, path.removeprefix("error."), depth - 1)
+    return payload.get(path) if isinstance(payload, dict) else None
+
+
+def _structured_error_category(stdout: str) -> tuple[str, int | None]:
+    """Classify known SDK JSON errors without reading arbitrary text fields.
 
     Claude can echo prompts, account identifiers, paths, or credentials on
-    stderr.  Raw diagnostics therefore stay outside both MCP responses and the
-    audit database.
+    stdout.  Parsing is bounded by output_limit in run_command and by the
+    explicit field paths inspected here.
     """
 
+    if len(stdout) > _MAX_ERROR_JSON_CHARS:
+        return "unknown", None
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, ValueError, RecursionError):
+        return "unknown", None
+    if not isinstance(payload, dict):
+        return "unknown", None
+
+    status: int | None = None
+    status_category: str | None = None
+    for field in _ERROR_STATUS_FIELDS:
+        raw_status = _get_path(payload, field)
+        if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+            if raw_status in _HTTP_STATUS_CATEGORIES:
+                status = raw_status
+                status_category = _HTTP_STATUS_CATEGORIES[raw_status]
+            break
+        if isinstance(raw_status, str):
+            candidate = _HTTP_STATUS_CATEGORIES.get(int(raw_status, 10)) if (
+                raw_status.isascii() and raw_status.isdigit() and len(raw_status) <= 3
+            ) else None
+            if candidate is not None:
+                status = int(raw_status)
+                status_category = candidate
+            break
+
+    specific_category = status_category if status_category != _GENERIC_CATEGORY else None
+    generic_category = status_category
+
+    for field in _ERROR_TYPE_FIELDS:
+        value = _get_path(payload, field)
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            candidate = _ERROR_TYPES.get(normalized)
+            if candidate == _GENERIC_CATEGORY:
+                generic_category = generic_category or candidate
+            elif candidate is not None:
+                specific_category = candidate
+                break
+
+    for field in _ERROR_MESSAGE_FIELDS:
+        if specific_category is not None:
+            break
+        value = _get_path(payload, field)
+        if not isinstance(value, str):
+            continue
+        normalized = value.strip().casefold()
+        candidate = _ERROR_MESSAGES.get(normalized)
+        if candidate == _GENERIC_CATEGORY:
+            generic_category = generic_category or candidate
+        elif candidate is not None:
+            specific_category = candidate
+            break
+    if specific_category is None and _is_error_envelope(payload):
+        result = payload.get("result")
+        if isinstance(result, str) and len(result) <= _MAX_ERROR_TEXT_CHARS:
+            specific_category, generic_candidate = _text_error_category(result)
+            generic_category = generic_category or generic_candidate
+        errors = payload.get("errors")
+        if isinstance(errors, list):
+            for item in errors[:_MAX_ERROR_ITEMS]:
+                values: tuple[object, ...]
+                if isinstance(item, str):
+                    values = (item,)
+                elif isinstance(item, dict):
+                    values = tuple(item.get(field) for field in _ERROR_ITEM_FIELDS)
+                else:
+                    continue
+                for value in values:
+                    if not isinstance(value, str) or len(value) > _MAX_ERROR_TEXT_CHARS:
+                        continue
+                    exact = _ERROR_TYPES.get(value.strip().casefold())
+                    if exact == _GENERIC_CATEGORY:
+                        generic_category = generic_category or exact
+                    elif exact is not None:
+                        specific_category = exact
+                        break
+                    candidate, generic_candidate = _text_error_category(value)
+                    generic_category = generic_category or generic_candidate
+                    if candidate is not None:
+                        specific_category = candidate
+                        break
+                if specific_category is not None:
+                    break
+    return specific_category or generic_category or "unknown", status
+
+
+def _stderr_category(stderr: str) -> str:
+    """Classify bounded stderr using exact allowlisted fragments."""
+
     diagnostic = stderr.casefold()
-    if any(term in diagnostic for term in ("not logged in", "authentication", "login")):
-        return "Claude authentication is unavailable"
-    if "model" in diagnostic and any(
-        term in diagnostic for term in ("not available", "unsupported", "not supported")
-    ):
-        return "the selected Claude model is unavailable"
-    return "Claude CLI returned an error"
+    for terms, category in _STDERR_RULES:
+        if any(term in diagnostic for term in terms):
+            return category
+    return "unknown"
 
 
 def child_environment() -> dict[str, str]:
@@ -244,8 +484,6 @@ async def run_command(
     stdout = stdout_bytes[:output_limit].decode("utf-8", errors="replace")
     stderr = stderr_bytes[:output_limit].decode("utf-8", errors="replace")
     if process.returncode != 0:
-        raise ExecutionError(
-            f"Claude CLI failed with exit code {process.returncode}: "
-            f"{_sanitize_error(stderr)}"
-        )
+        category, status = classify_claude_error(stdout, stderr)
+        raise ClaudeResultError(category, status, process.returncode)
     return ExecutionResult(stdout, stderr, process.returncode or 0)

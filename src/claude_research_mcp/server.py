@@ -26,10 +26,12 @@ from .config import (
 from .executor import (
     DEFAULT_MAX_TURNS,
     DEFAULT_TIMEOUT_SECONDS,
+    ClaudeResultError,
     ExecutionError,
     build_auth_status_command,
     build_ask_command,
     build_version_command,
+    classify_claude_error,
     run_command,
     truncate_text,
     validate_options,
@@ -126,11 +128,14 @@ def _error(exc: BaseException, prompt: object = None) -> ExecutionError:
 def parse_claude_result(stdout: str) -> dict[str, object]:
     try:
         payload = json.loads(stdout)
-    except (TypeError, json.JSONDecodeError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ExecutionError("Claude CLI returned invalid JSON") from exc
     if not isinstance(payload, dict):
         raise ExecutionError("Claude CLI returned invalid JSON")
     result = payload.get("result", "")
+    if payload.get("is_error") is True:
+        category, status = classify_claude_error(stdout)
+        raise ClaudeResultError(category, status)
     if not isinstance(result, str):
         result = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 

@@ -22,7 +22,7 @@ t.cast(t.Any, SPEC.loader).exec_module(capture)
 NOW = datetime(2026, 9, 12, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def raw_statusline() -> dict[str, object]:
+def raw_statusline(*, now: datetime = NOW) -> dict[str, object]:
     return {
         "session_id": "must-not-be-persisted",
         "transcript_path": "/private/transcript.jsonl",
@@ -30,16 +30,16 @@ def raw_statusline() -> dict[str, object]:
         "rate_limits": {
             "five_hour": {
                 "used_percentage": 23.5,
-                "resets_at": int((NOW + timedelta(hours=1)).timestamp()),
+                "resets_at": int((now + timedelta(hours=1)).timestamp()),
                 "future_field": "ignored",
             },
             "seven_day": {
                 "used_percentage": 41.2,
-                "resets_at": int((NOW + timedelta(days=2)).timestamp()),
+                "resets_at": int((now + timedelta(days=2)).timestamp()),
             },
             "spend_limit": {
                 "used_percentage": 150,
-                "resets_at": int((NOW + timedelta(days=30)).timestamp()),
+                "resets_at": int((now + timedelta(days=30)).timestamp()),
             },
         },
     }
@@ -87,7 +87,7 @@ def test_command_writes_private_sanitized_file_and_never_echoes_input(
 
     result = subprocess.run(
         [sys.executable, str(SCRIPT)],
-        input=json.dumps(raw_statusline()),
+        input=json.dumps(raw_statusline(now=datetime.now(timezone.utc))),
         text=True,
         capture_output=True,
         env=env,
@@ -129,7 +129,7 @@ def test_command_fails_silently_without_overwriting_on_unsafe_input(
 def test_command_rejects_symlink_target_and_nonprivate_directory(
     tmp_path: Path,
 ) -> None:
-    payload = json.dumps(raw_statusline())
+    payload = json.dumps(raw_statusline(now=datetime.now(timezone.utc)))
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     sentinel = tmp_path / "sentinel"

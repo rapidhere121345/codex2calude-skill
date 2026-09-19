@@ -116,6 +116,14 @@ manual check.
   and execution reservation happen in one SQLite write transaction. A
   process-wide flock limits shared-account concurrency.
 - Responses and diagnostics are bounded. Raw Claude stderr is not returned.
+- CLI failures are classified from bounded error envelopes on stdout and from
+  stderr into fixed, sanitized categories. Only allowlisted error categories
+  and explicitly structured HTTP status codes may cross the bridge; raw error
+  messages, prompts, account identifiers, paths, and credentials do not.
+  A successful `claude_status` checks CLI version and reported login state, not
+  inference availability or model entitlement. Use one minimal `claude_once`
+  request to verify the inference path; do not repeatedly retry an unchanged
+  failure or interpret missing quota observations as exhausted quota.
 - Quota status never reads OAuth credentials and never calls an undocumented
   usage endpoint. It only reads the bounded, owner-controlled sanitized
   statusline observation, and reports unavailable rather than guessing.
