@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily retention for private Claude MCP error diagnostics
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+Unit=claude-mcp-error-retention.service
+
+[Install]
+WantedBy=timers.target

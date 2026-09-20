@@ -11,6 +11,7 @@ import signal
 import subprocess
 
 from .config import Settings
+from .diagnostics import attach_raw_error
 
 
 # Web research commonly needs more than eight search/fetch rounds. This remains
@@ -36,6 +37,7 @@ ERROR_CATEGORIES = (
     "network",
     "invalid_argument",
     "runtime",
+    "timeout",
     "unknown",
 )
 
@@ -63,6 +65,18 @@ class ClaudeResultError(ExecutionError):
             f", http_status: {self.http_status})" if self.http_status is not None else ")"
         )
         super().__init__(prefix + suffix)
+
+
+class CommandTimeoutError(ExecutionError):
+    """A trusted server-enforced process timeout."""
+
+
+class OutputLimitExceededError(ExecutionError):
+    """A process stream exceeded the configured bounded output limit."""
+
+
+class OptionsValidationError(ExecutionError):
+    """Caller-supplied execution options are invalid."""
 
 # Only these structured names are inspected in bounded stdout.  Values are
 # never copied into responses; they are used solely to select a category.
@@ -179,17 +193,17 @@ def validate_options(
     *, model: str, use_web: object, max_turns: object, timeout_seconds: object
 ) -> tuple[str, bool, int, int]:
     if not isinstance(model, str):
-        raise ExecutionError("model must be a string")
+        raise OptionsValidationError("model must be a string")
     if not isinstance(use_web, bool):
-        raise ExecutionError("use_web must be boolean")
+        raise OptionsValidationError("use_web must be boolean")
     if isinstance(max_turns, bool) or not isinstance(max_turns, int):
-        raise ExecutionError("max_turns must be an integer")
+        raise OptionsValidationError("max_turns must be an integer")
     if not MIN_MAX_TURNS <= max_turns <= MAX_MAX_TURNS:
-        raise ExecutionError("max_turns must be between 1 and 100")
+        raise OptionsValidationError("max_turns must be between 1 and 100")
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
-        raise ExecutionError("timeout_seconds must be an integer")
+        raise OptionsValidationError("timeout_seconds must be an integer")
     if not MIN_TIMEOUT_SECONDS <= timeout_seconds <= MAX_TIMEOUT_SECONDS:
-        raise ExecutionError("timeout_seconds must be between 1 and 3600")
+        raise OptionsValidationError("timeout_seconds must be between 1 and 3600")
     return model, use_web, max_turns, timeout_seconds
 
 
@@ -393,19 +407,37 @@ def child_environment() -> dict[str, str]:
     return result
 
 
-async def _read_bounded(stream: asyncio.StreamReader, limit: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = limit + 1
+class _BoundedAccumulator:
+    """A cancellation-safe buffer retaining at most limit + 1 bytes."""
+
+    def __init__(self, limit: int):
+        self._remaining = limit + 1
+        self._chunks: list[bytes] = []
+
+    def extend(self, chunk: bytes) -> None:
+        if self._remaining <= 0:
+            return
+        retained = chunk[: self._remaining]
+        self._chunks.append(retained)
+        self._remaining -= len(retained)
+
+    @property
+    def remaining(self) -> int:
+        return self._remaining
+
+    @property
+    def value(self) -> bytes:
+        return b"".join(self._chunks)
+
+
+async def _read_bounded(
+    stream: asyncio.StreamReader, accumulator: _BoundedAccumulator
+) -> None:
     while True:
-        chunk = await stream.read(min(65_536, max(1, remaining)))
+        chunk = await stream.read(65_536)
         if not chunk:
             break
-        if remaining > 0:
-            chunks.append(chunk[:remaining])
-            remaining -= len(chunk)
-        if remaining <= 0:
-            remaining = 0
-    return b"".join(chunks)[: limit + 1]
+        accumulator.extend(chunk)
 
 
 async def _stop_process_group(process: asyncio.subprocess.Process) -> None:
@@ -414,10 +446,12 @@ async def _stop_process_group(process: asyncio.subprocess.Process) -> None:
     except ProcessLookupError:
         pass
     try:
-        await asyncio.wait_for(process.wait(), timeout=1.0)
-        return
+        await asyncio.wait_for(process.wait(), timeout=0.25)
     except asyncio.TimeoutError:
         pass
+    # The session leader can exit while a descendant retains its pipes.  Kill
+    # the original process group unconditionally so that case cannot block the
+    # final bounded drain (or leave an ignored-SIGTERM descendant running).
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -425,10 +459,42 @@ async def _stop_process_group(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-async def _finish_reads(*tasks: asyncio.Task[bytes]) -> tuple[bytes, ...]:
+async def _finish_reads(*tasks: asyncio.Task[None]) -> None:
     for task in tasks:
         task.cancel()
-    return await asyncio.gather(*tasks, return_exceptions=True)  # type: ignore[return-value]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _captured_stream(value: bytes, limit: int) -> str:
+    return (
+            value[: limit + 1].decode("utf-8", errors="replace")
+            if len(value) > limit
+            else value.decode("utf-8", errors="replace")
+    )
+
+
+async def _capture_failure(
+    process: asyncio.subprocess.Process,
+    *,
+    tasks: tuple[asyncio.Task[None], ...],
+    streams: tuple[asyncio.StreamReader, ...],
+    accumulators: tuple[_BoundedAccumulator, ...],
+) -> tuple[bytes, ...]:
+    """Stop the whole process group, then drain each dead pipe once."""
+
+    await _stop_process_group(process)
+    await _finish_reads(*tasks)
+    drains = tuple(
+        asyncio.create_task(_read_bounded(stream, accumulator))
+        for stream, accumulator in zip(streams, accumulators)
+    )
+    try:
+        await asyncio.wait_for(asyncio.gather(*drains), timeout=0.75)
+    except asyncio.TimeoutError:
+        for drain in drains:
+            drain.cancel()
+        await asyncio.gather(*drains, return_exceptions=True)
+    return tuple(accumulator.value for accumulator in accumulators)
 
 
 async def run_command(
@@ -454,36 +520,91 @@ async def run_command(
     except (OSError, ValueError) as exc:
         raise ExecutionError("failed to start Claude CLI") from exc
 
-    stdout_task = asyncio.create_task(_read_bounded(process.stdout, output_limit))
-    stderr_task = asyncio.create_task(_read_bounded(process.stderr, output_limit))
+    stdout_accumulator = _BoundedAccumulator(output_limit)
+    stderr_accumulator = _BoundedAccumulator(output_limit)
+    stdout_task = asyncio.create_task(_read_bounded(process.stdout, stdout_accumulator))
+    stderr_task = asyncio.create_task(_read_bounded(process.stderr, stderr_accumulator))
     timed_out = False
+    failure_output: tuple[bytes, ...] | None = None
     try:
         assert process.stdin is not None
-        process.stdin.write((prompt or "").encode("utf-8"))
-        await process.stdin.drain()
-        process.stdin.close()
-        await process.stdin.wait_closed()
+        try:
+            process.stdin.write((prompt or "").encode("utf-8"))
+            await process.stdin.drain()
+            process.stdin.close()
+            await process.stdin.wait_closed()
+        except (BrokenPipeError, ConnectionResetError):
+            failure_output = await _capture_failure(
+                process,
+                tasks=(stdout_task, stderr_task),
+                streams=(process.stdout, process.stderr),
+                accumulators=(stdout_accumulator, stderr_accumulator),
+            )
+            error = ExecutionError("Claude CLI closed its input stream")
+            attach_raw_error(
+                error,
+                stdout=_captured_stream(failure_output[0], output_limit),
+                stderr=_captured_stream(failure_output[1], output_limit),
+            )
+            raise error
         outputs = await asyncio.wait_for(
             asyncio.gather(stdout_task, stderr_task, process.wait()),
             timeout=timeout_seconds,
         )
-        stdout_bytes, stderr_bytes = outputs[:2]
     except asyncio.TimeoutError:
         timed_out = True
-    except asyncio.CancelledError:
-        await _finish_reads(stdout_task, stderr_task)
-        await _stop_process_group(process)
+    except asyncio.CancelledError as exc:
+        failure_output = await _capture_failure(
+            process,
+            tasks=(stdout_task, stderr_task),
+            streams=(process.stdout, process.stderr),
+            accumulators=(stdout_accumulator, stderr_accumulator),
+        )
+        attach_raw_error(
+            exc,
+            stdout=_captured_stream(failure_output[0], output_limit),
+            stderr=_captured_stream(failure_output[1], output_limit),
+        )
         raise
     finally:
-        if timed_out:
-            await _finish_reads(stdout_task, stderr_task)
-            await _stop_process_group(process)
+        if timed_out and failure_output is None:
+            failure_output = await _capture_failure(
+                process,
+                tasks=(stdout_task, stderr_task),
+                streams=(process.stdout, process.stderr),
+                accumulators=(stdout_accumulator, stderr_accumulator),
+            )
 
     if timed_out:
-        raise ExecutionError(f"Claude CLI timed out after {timeout_seconds} seconds")
+        error = CommandTimeoutError(
+            f"Claude CLI timed out after {timeout_seconds} seconds"
+        )
+        assert failure_output is not None
+        attach_raw_error(
+            error,
+            stdout=_captured_stream(failure_output[0], output_limit),
+            stderr=_captured_stream(failure_output[1], output_limit),
+        )
+        raise error
+    stdout_bytes = stdout_accumulator.value
+    stderr_bytes = stderr_accumulator.value
     stdout = stdout_bytes[:output_limit].decode("utf-8", errors="replace")
     stderr = stderr_bytes[:output_limit].decode("utf-8", errors="replace")
     if process.returncode != 0:
         category, status = classify_claude_error(stdout, stderr)
-        raise ClaudeResultError(category, status, process.returncode)
+        error = ClaudeResultError(category, status, process.returncode)
+        attach_raw_error(
+            error,
+            stdout=_captured_stream(stdout_bytes, output_limit),
+            stderr=_captured_stream(stderr_bytes, output_limit),
+        )
+        raise error
+    if len(stdout_bytes) > output_limit or len(stderr_bytes) > output_limit:
+        error = OutputLimitExceededError("Claude CLI exceeded its output limit")
+        attach_raw_error(
+            error,
+            stdout=_captured_stream(stdout_bytes, output_limit),
+            stderr=_captured_stream(stderr_bytes, output_limit),
+        )
+        raise error
     return ExecutionResult(stdout, stderr, process.returncode or 0)

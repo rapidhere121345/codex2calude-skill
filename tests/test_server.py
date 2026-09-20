@@ -23,6 +23,8 @@ from claude_research_mcp.config import (
 )
 from claude_research_mcp.executor import (
     ExecutionError,
+    ClaudeResultError,
+    CommandTimeoutError,
     build_auth_status_command,
     build_ask_command,
     build_version_command,
@@ -39,6 +41,7 @@ from claude_research_mcp.persistence import (
     create_conversation,
     get_conversation,
     initialize,
+    record_audit_event,
     reserve_call,
 )
 from claude_research_mcp.server import INSTRUCTIONS, create_app, parse_claude_result
@@ -271,7 +274,10 @@ def test_five_tools_once_start_continue_close_and_principal_isolation(tmp_path):
         asyncio.run(get_tool(partner_app, "claude_continue")(conversation, "steal"))
 
     closed = asyncio.run(get_tool(app, "claude_close")(conversation))
-    assert closed == {"status": "closed", "conversation_id": conversation, "transcript_deleted": False}
+    assert closed["status"] == "closed"
+    assert closed["conversation_id"] == conversation
+    assert closed["transcript_deleted"] is False
+    validate_conversation_id(closed["request_id"])
     with pytest.raises(ExecutionError, match="conversation is closed"):
         asyncio.run(get_tool(app, "claude_continue")(conversation, "after close"))
 
@@ -319,6 +325,23 @@ def test_schema_migration_and_conversation_list_metadata(tmp_path):
             ),
         )
 
+    initialize(database)
+    with sqlite3.connect(database) as connection:
+        new_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(audit_log)")
+        }
+        legacy_values = connection.execute(
+            "SELECT error_category, http_status, exit_code, request_id, "
+            "raw_log_saved FROM audit_log"
+        ).fetchall()
+    assert {
+        "error_category",
+        "http_status",
+        "exit_code",
+        "request_id",
+        "raw_log_saved",
+    } <= new_columns
+    assert legacy_values == [(None, None, None, None, None)]
     initialize(database)
     with sqlite3.connect(database) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(conversations)")}
@@ -417,6 +440,34 @@ def test_schema_migration_and_conversation_list_metadata(tmp_path):
 
     with pytest.raises(ExecutionError, match="limit must"):
         asyncio.run(get_tool(app, "claude_list_conversations")(limit=0))
+
+
+def test_audit_migration_is_idempotent_and_concurrent(tmp_path):
+    database = tmp_path / "legacy-concurrent.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "principal TEXT NOT NULL, tool TEXT NOT NULL, conversation_id TEXT, "
+            "model TEXT, status TEXT NOT NULL, duration_ms INTEGER, "
+            "created_at TEXT NOT NULL)"
+        )
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures = [pool.submit(initialize, database) for _ in range(24)]
+        for future in futures:
+            future.result()
+    initialize(database)
+    with sqlite3.connect(database) as connection:
+        columns = {
+            (row[1], row[2])
+            for row in connection.execute("PRAGMA table_info(audit_log)")
+        }
+    assert {
+        ("error_category", "TEXT"),
+        ("http_status", "INTEGER"),
+        ("exit_code", "INTEGER"),
+        ("request_id", "TEXT"),
+        ("raw_log_saved", "INTEGER"),
+    } <= columns
 
 
 def test_start_title_validation_and_audit_omits_prompt(tmp_path):
@@ -728,7 +779,8 @@ def test_limit_output_timeout_kills_group_and_concurrency(tmp_path):
     settings = make_settings(tmp_path)
     from claude_research_mcp.executor import truncate_text
 
-    asyncio.run(run_command([sys.executable, "-c", "print('x' * 100)"], cwd=tmp_path, timeout_seconds=2, output_limit=50, prompt=None))
+    with pytest.raises(ExecutionError, match="output limit"):
+        asyncio.run(run_command([sys.executable, "-c", "print('x' * 100)"], cwd=tmp_path, timeout_seconds=2, output_limit=50, prompt=None))
     assert "truncated" in truncate_text("x" * 100, 50)
     assert "truncated" in truncate_text("abcdef", 3)
 
@@ -891,6 +943,198 @@ def test_sensitive_failure_and_audit_never_store_prompt_or_output(tmp_path):
     assert len(rows) == 1
     assert rows[0][:4] == ("owner", "claude_once", None, "opus")
     assert "secret" not in json.dumps(rows)
+
+
+def test_raw_failure_hook_and_safe_metadata(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin, fail=True)
+    calls = []
+
+    def writer(work_root, *, principal, request_id, stdout, stderr):
+        calls.append((work_root, principal, request_id, stdout, stderr))
+        return True
+
+    monkeypatch.setattr(server_module.diagnostics, "write_raw_error", writer)
+    app = create_app(settings)
+    with pytest.raises(ExecutionError) as caught:
+        asyncio.run(get_tool(app, "claude_once")("raw failure prompt"))
+    rendered = str(caught.value)
+    assert "raw_log_saved: true" in rendered
+    assert "secret@example.com" not in rendered
+    assert len(calls) == 1
+    work_root, principal, request_id, stdout, stderr = calls[0]
+    assert (work_root, principal) == (settings.work_root, "owner")
+    validate_conversation_id(request_id)
+    assert "secret@example.com" in stderr
+    assert "raw failure prompt" in stderr
+
+    with sqlite3.connect(settings.database_path) as connection:
+        row = connection.execute(
+            "SELECT error_category, exit_code, request_id, raw_log_saved "
+            "FROM audit_log"
+        ).fetchone()
+    assert row[0] == "unknown"
+    assert row[1] == 7
+    assert row[2] == request_id
+    assert row[3] == 1
+
+
+def test_raw_failure_storage_failure_reports_false(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin, fail=True)
+    monkeypatch.setattr(server_module.diagnostics, "write_raw_error", lambda *a, **k: False)
+    app = create_app(settings)
+    with pytest.raises(ExecutionError) as caught:
+        asyncio.run(get_tool(app, "claude_once")("raw failure prompt"))
+    assert "raw_log_saved: false" in str(caught.value)
+    with sqlite3.connect(settings.database_path) as connection:
+        assert connection.execute("SELECT raw_log_saved FROM audit_log").fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("exc", "category", "status"),
+    [
+        (ClaudeResultError("auth", 401), "auth", "error"),
+        (ClaudeResultError("rate_limit", 429), "rate_limit", "error"),
+        (ClaudeResultError("permission", 403), "permission", "error"),
+        (ClaudeResultError("model_unavailable"), "model_unavailable", "error"),
+        (ClaudeResultError("runtime", 500), "runtime", "error"),
+        (CommandTimeoutError("timed out"), "timeout", "timeout"),
+        (asyncio.CancelledError(), "cancellation", "cancelled"),
+    ],
+)
+def test_failure_metadata_classifications(exc, category, status):
+    from claude_research_mcp.executor import CommandTimeoutError
+    from claude_research_mcp.server import _error_metadata, _failure_status
+
+    assert _error_metadata(exc)[0] == category
+    assert _failure_status(exc) == status
+
+
+def test_zero_exit_is_error_and_model_mismatch_never_raw_logged(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    calls = []
+    monkeypatch.setattr(server_module.diagnostics, "write_raw_error", lambda *a, **k: calls.append((a, k)) or True)
+    app = create_app(settings)
+    payload = json.dumps(
+        {"is_error": True, "result": "secret-zero-exit-error", "error": {"status": 429}}
+    )
+    settings.claude_bin.write_text("#!/bin/sh\nprintf '%s\\n' '" + payload + "'\n")
+    settings.claude_bin.chmod(0o755)
+    with pytest.raises(ExecutionError, match="rate_limit") as caught:
+        asyncio.run(get_tool(app, "claude_once")("zero exit"))
+    assert "secret-zero-exit-error" not in str(caught.value)
+    assert len(calls) == 1
+    assert calls[0][1]["stdout"] == payload + "\n"
+
+    calls.clear()
+    settings.claude_bin.write_text(
+        "#!/bin/sh\nprintf '%s\\n' '"
+        + json.dumps({"result": "valid secret success", "sessionId": "x", "modelUsage": {}})
+        + "'\n"
+    )
+    settings.claude_bin.chmod(0o755)
+    with pytest.raises(ExecutionError, match="requested Claude model family"):
+        asyncio.run(get_tool(app, "claude_once")("family mismatch"))
+    assert calls == []
+
+
+def test_request_ids_match_audit_for_all_seven_tools_and_rejections(
+    tmp_path, monkeypatch
+):
+    claude_home = tmp_path / "claude-home"
+    monkeypatch.setattr(server_module, "_claude_home", lambda: claude_home)
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin)
+    app = create_app(settings)
+
+    status = asyncio.run(get_tool(app, "claude_status")())
+    once = asyncio.run(get_tool(app, "claude_once")("question"))
+    started = asyncio.run(get_tool(app, "claude_start")("start"))
+    conversation = started["conversation_id"]
+    _write_transcript(
+        settings, claude_home, "claude-session-123", [{"type": "user", "message": {"content": "q"}}]
+    )
+    continued = asyncio.run(get_tool(app, "claude_continue")(conversation, "more"))
+    listed = asyncio.run(get_tool(app, "claude_list_conversations")())
+    exported = asyncio.run(get_tool(app, "claude_export_conversation")(conversation))
+    closed = asyncio.run(get_tool(app, "claude_close")(conversation))
+    success_ids = [
+        result["request_id"]
+        for result in (status, once, started, continued, listed, exported, closed)
+    ]
+    assert len(set(success_ids)) == 7
+    for value in success_ids:
+        validate_conversation_id(value)
+
+    rejection_cases = [
+        (get_tool(app, "claude_once")("x", model="secret-model"), "model is unavailable"),
+        (get_tool(app, "claude_start")("x", use_web="true"), "use_web"),
+        (
+            get_tool(app, "claude_continue")(
+                "01935555-eeee-4eee-8eee-eeeeeeeeeeee", "x"
+            ),
+            "unavailable",
+        ),
+        (get_tool(app, "claude_close")("not-a-uuid"), "server-issued UUID"),
+        (get_tool(app, "claude_list_conversations")(limit=0), "limit"),
+        (get_tool(app, "claude_export_conversation")("not-a-uuid"), "server-issued UUID"),
+    ]
+    error_ids = []
+    error_messages = []
+    for case, marker in rejection_cases:
+        with pytest.raises(ExecutionError, match=marker) as caught:
+            asyncio.run(case)
+        rendered = str(caught.value)
+        error_messages.append(rendered)
+        request_match = re.search(r"request_id: ([0-9a-f-]{36})", rendered)
+        assert request_match
+        error_ids.append(request_match.group(1))
+    assert len(set(error_ids)) == len(error_ids)
+
+    with sqlite3.connect(settings.database_path) as connection:
+        rows = connection.execute(
+            "SELECT status, request_id FROM audit_log ORDER BY id"
+        ).fetchall()
+        new_fields = json.dumps(
+            connection.execute(
+                "SELECT error_category, http_status, exit_code, request_id, "
+                "raw_log_saved FROM audit_log"
+            ).fetchall()
+        )
+    assert set(success_ids + error_ids) == {row[1] for row in rows}
+    assert all(row[0] != "running" for row in rows)
+    assert "secret-model" not in " ".join(error_messages)
+    assert "not-a-uuid" not in " ".join(error_messages)
+    assert "secret-model" not in new_fields
+    assert "not-a-uuid" not in new_fields
+
+
+def test_safe_audit_metadata_rejects_tampered_attributes(tmp_path):
+    settings = make_settings(tmp_path)
+    database = settings.database_path
+    initialize(database)
+    request_id = "6850492e-06f4-4be0-8e52-cdcba1a26c38"
+    record_audit_event(
+        database,
+        principal="owner",
+        tool="claude_once",
+        conversation_id=None,
+        model="opus",
+        status="error",
+        duration_ms=3,
+        error_category="arbitrary-secret-path",
+        http_status=999,
+        exit_code=999999,
+        request_id=request_id.upper(),
+        raw_log_saved="yes",
+    )
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT error_category, http_status, exit_code, request_id, "
+            "raw_log_saved FROM audit_log"
+        ).fetchone()
+    assert row == (None, None, None, None, None)
 
 
 def test_invalid_start_creates_no_conversation_and_failed_start_is_single_audit(tmp_path):

@@ -1,0 +1,19 @@
+[Unit]
+Description=Prune expired private Claude MCP error diagnostics
+
+[Service]
+Type=oneshot
+User=claudemcp
+Group=claudemcp
+UMask=0077
+ExecStart=/opt/claude-research-mcp/current/.venv/bin/python -I /opt/claude-research-mcp/current/scripts/prune-error-logs.py
+TimeoutStartSec=60
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+ReadWritePaths=/var/lib/claude-mcp/research/state/error-diagnostics

@@ -10,6 +10,62 @@ import sqlite3
 import uuid
 
 
+AUDIT_STATUSES = frozenset(
+    ("running", "success", "error", "timeout", "cancelled", "burst_limited")
+)
+AUDIT_ERROR_CATEGORIES = frozenset(
+    (
+        "auth",
+        "rate_limit",
+        "model_unavailable",
+        "permission",
+        "network",
+        "invalid_argument",
+        "runtime",
+        "timeout",
+        "output_limit",
+        "cancellation",
+        "validation",
+        "unknown",
+    )
+)
+_HTTP_STATUS_ALLOWLIST = frozenset(
+    (400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504)
+)
+
+
+def _safe_category(value: object) -> str | None:
+    return value if isinstance(value, str) and value in AUDIT_ERROR_CATEGORIES else None
+
+
+def _safe_http_status(value: object) -> int | None:
+    return (
+        value
+        if type(value) is int and value in _HTTP_STATUS_ALLOWLIST
+        else None
+    )
+
+
+def _safe_exit_code(value: object) -> int | None:
+    return value if type(value) is int and -255 <= value <= 255 else None
+
+
+def _safe_request_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, TypeError):
+        return None
+    return value if parsed.version == 4 and str(parsed) == value else None
+
+
+def _safe_raw_log_saved(value: object) -> int | None:
+    if value is None:
+        return None
+    return int(value) if isinstance(value, bool) else None
+
+
 class SessionOwnershipError(PermissionError):
     """The conversation belongs to another principal."""
 
@@ -119,6 +175,23 @@ def initialize(database_path: Path) -> None:
                 "closed_at, created_at) "
                 "WHERE last_activity_at IS NULL"
             )
+        audit_columns = {
+            row["name"]
+            for row in db.execute("SELECT name FROM pragma_table_info('audit_log')")
+        }
+        # Nullable additive columns allow old executables to keep using explicit
+        # legacy INSERTs while a new executable rolls forward.  History is not
+        # inferred or backfilled.
+        if "error_category" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN error_category TEXT")
+        if "http_status" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN http_status INTEGER")
+        if "exit_code" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN exit_code INTEGER")
+        if "request_id" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN request_id TEXT")
+        if "raw_log_saved" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN raw_log_saved INTEGER")
         db.execute(
             "CREATE INDEX IF NOT EXISTS conversations_principal_activity "
             "ON conversations(principal, last_activity_at, conversation_id)"
@@ -292,6 +365,7 @@ def reserve_call(
     tool: str,
     conversation_id: str | None,
     model: str,
+    request_id: str | None = None,
     continue_burst_limit: int | None = None,
     continue_burst_window_seconds: int | None = None,
 ) -> int:
@@ -326,20 +400,43 @@ def reserve_call(
                 )
         cursor = db.execute(
             "INSERT INTO audit_log "
-            "(principal, tool, conversation_id, model, status, duration_ms, created_at) "
-            "VALUES (?, ?, ?, ?, 'running', NULL, ?)",
-            (principal, tool, conversation_id, model, _now()),
+            "(principal, tool, conversation_id, model, status, duration_ms, created_at, "
+            "error_category, http_status, exit_code, request_id, raw_log_saved) "
+            "VALUES (?, ?, ?, ?, 'running', NULL, ?, NULL, NULL, NULL, ?, NULL)",
+            (principal, tool, conversation_id, model, _now(), _safe_request_id(request_id)),
         )
         return int(cursor.lastrowid or 0)
 
 
 def finish_call(
-    database_path: Path, audit_id: int, *, status: str, duration_ms: int
+    database_path: Path,
+    audit_id: int,
+    *,
+    status: str,
+    duration_ms: int,
+    error_category: str | None = None,
+    http_status: int | None = None,
+    exit_code: int | None = None,
+    request_id: str | None = None,
+    raw_log_saved: bool | None = None,
 ) -> None:
+    if status not in AUDIT_STATUSES:
+        raise ValueError("invalid audit status")
     with transaction(database_path) as db:
         db.execute(
-            "UPDATE audit_log SET status = ?, duration_ms = ? WHERE id = ?",
-            (status, duration_ms, audit_id),
+            "UPDATE audit_log SET status = ?, duration_ms = ?, error_category = ?, "
+            "http_status = ?, exit_code = ?, request_id = COALESCE(?, request_id), "
+            "raw_log_saved = ? WHERE id = ?",
+            (
+                status,
+                duration_ms,
+                _safe_category(error_category),
+                _safe_http_status(http_status),
+                _safe_exit_code(exit_code),
+                _safe_request_id(request_id),
+                _safe_raw_log_saved(raw_log_saved),
+                audit_id,
+            ),
         )
 
 
@@ -365,11 +462,32 @@ def record_audit_event(
     model: str | None,
     status: str,
     duration_ms: int = 0,
+    error_category: str | None = None,
+    http_status: int | None = None,
+    exit_code: int | None = None,
+    request_id: str | None = None,
+    raw_log_saved: bool | None = None,
 ) -> None:
+    if status not in AUDIT_STATUSES:
+        raise ValueError("invalid audit status")
     with transaction(database_path) as db:
         db.execute(
             "INSERT INTO audit_log "
-            "(principal, tool, conversation_id, model, status, duration_ms, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (principal, tool, conversation_id, model, status, duration_ms, _now()),
+            "(principal, tool, conversation_id, model, status, duration_ms, created_at, "
+            "error_category, http_status, exit_code, request_id, raw_log_saved) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                principal,
+                tool,
+                conversation_id,
+                model,
+                status,
+                duration_ms,
+                _now(),
+                _safe_category(error_category),
+                _safe_http_status(http_status),
+                _safe_exit_code(exit_code),
+                _safe_request_id(request_id),
+                _safe_raw_log_saved(raw_log_saved),
+            ),
         )

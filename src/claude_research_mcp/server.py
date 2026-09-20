@@ -27,7 +27,10 @@ from .executor import (
     DEFAULT_MAX_TURNS,
     DEFAULT_TIMEOUT_SECONDS,
     ClaudeResultError,
+    CommandTimeoutError,
     ExecutionError,
+    OutputLimitExceededError,
+    OptionsValidationError,
     build_auth_status_command,
     build_ask_command,
     build_version_command,
@@ -36,6 +39,7 @@ from .executor import (
     truncate_text,
     validate_options,
 )
+from . import diagnostics
 from .locking import concurrency_slot
 from .persistence import (
     ContinueBurstLimitError,
@@ -122,20 +126,117 @@ def _error(exc: BaseException, prompt: object = None) -> ExecutionError:
         )
     if isinstance(prompt, str) and len(prompt) >= 16 and prompt in message:
         message = message.replace(prompt, "[prompt redacted]")
-    return ExecutionError(truncate_text(message, 500))
+    message = truncate_text(message, 500)
+    request_id = getattr(exc, "request_id", None)
+    if isinstance(request_id, str):
+        message += f" [request_id: {request_id}]"
+    raw_saved = getattr(exc, "raw_log_saved", None)
+    if isinstance(raw_saved, bool):
+        message += f" [raw_log_saved: {str(raw_saved).lower()}]"
+    return ExecutionError(message)
 
 
-def parse_claude_result(stdout: str) -> dict[str, object]:
+def _error_metadata(exc: BaseException) -> tuple[str, int | None, int | None]:
+    if isinstance(exc, ClaudeResultError):
+        return exc.category, exc.http_status, exc.exit_code
+    if isinstance(exc, CommandTimeoutError):
+        return "timeout", None, None
+    if isinstance(exc, OutputLimitExceededError):
+        return "output_limit", None, None
+    if isinstance(exc, asyncio.CancelledError):
+        return "cancellation", None, None
+    if isinstance(exc, SessionOwnershipError):
+        return "permission", None, None
+    if isinstance(exc, ContinueBurstLimitError):
+        return "rate_limit", None, None
+    if isinstance(exc, ConfigurationError):
+        return "validation", None, None
+    if isinstance(exc, OptionsValidationError):
+        return "validation", None, None
+    if isinstance(exc, ExecutionError):
+        return "runtime", None, None
+    return "unknown", None, None
+
+
+def _failure_status(exc: BaseException) -> str:
+    if isinstance(exc, CommandTimeoutError):
+        return "timeout"
+    if isinstance(exc, asyncio.CancelledError):
+        return "cancelled"
+    return "error"
+
+
+def _save_raw_error(
+    settings: Settings, exc: BaseException, request_id: str
+) -> bool | None:
+    data = diagnostics.raw_error_data(exc)
+    if data is None:
+        return None
+    writer = diagnostics.write_raw_error
+    if writer is None:
+        return False
+    try:
+        return bool(
+            writer(
+                settings.work_root,
+                principal=settings.principal,
+                request_id=request_id,
+                stdout=data.stdout,
+                stderr=data.stderr,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _annotate_error(exc: BaseException, request_id: str, raw_saved: bool | None) -> None:
+    exc.request_id = request_id  # noqa: PYI025
+    if raw_saved is not None:
+        exc.raw_log_saved = raw_saved  # noqa: PYI025
+
+
+def _finish_safely(database_path: Path, audit_id: int | None, **kwargs) -> None:
+    try:
+        if audit_id is None:
+            record_audit_event(database_path, **kwargs)
+        else:
+            finish_keys = {
+                "status",
+                "duration_ms",
+                "error_category",
+                "http_status",
+                "exit_code",
+                "request_id",
+                "raw_log_saved",
+            }
+            finish_call(
+                database_path,
+                audit_id,
+                **{key: kwargs[key] for key in finish_keys if key in kwargs},
+            )
+    except Exception:
+        # Persistence diagnostics must not replace or reveal the caller's
+        # original outcome.  Cancellation is a BaseException and still escapes.
+        pass
+
+
+def parse_claude_result(stdout: str, stderr: str = "") -> dict[str, object]:
     try:
         payload = json.loads(stdout)
     except (TypeError, ValueError, RecursionError) as exc:
-        raise ExecutionError("Claude CLI returned invalid JSON") from exc
+        error = ExecutionError("Claude CLI returned invalid JSON")
+        diagnostics.attach_raw_error(error, stdout=stdout, stderr=stderr)
+        raise error from exc
     if not isinstance(payload, dict):
-        raise ExecutionError("Claude CLI returned invalid JSON")
+        error = ExecutionError("Claude CLI returned invalid JSON")
+        diagnostics.attach_raw_error(error, stdout=stdout, stderr=stderr)
+        raise error
     result = payload.get("result", "")
     if payload.get("is_error") is True:
-        category, status = classify_claude_error(stdout)
-        raise ClaudeResultError(category, status)
+        category, status = classify_claude_error(stdout, stderr)
+        error = ClaudeResultError(category, status, 0)
+        diagnostics.attach_raw_error(error, stdout=stdout, stderr=stderr)
+        raise error
     if not isinstance(result, str):
         result = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
 
@@ -446,6 +547,7 @@ def create_app(settings: Settings) -> FastMCP:
         """Sanitized CLI/model status without account identifiers."""
         start = time.monotonic()
         audit: int | None = None
+        request_id = diagnostics.new_request_id()
         try:
             audit = reserve_call(
                 settings.database_path,
@@ -453,6 +555,7 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_status",
                 conversation_id=None,
                 model="-",
+                request_id=request_id,
             )
             raw = await _run(
                 settings,
@@ -483,13 +586,18 @@ def create_app(settings: Settings) -> FastMCP:
             try:
                 auth_payload = json.loads(auth_raw.stdout)
             except (TypeError, json.JSONDecodeError) as exc:
-                raise ExecutionError("Claude CLI returned invalid auth status") from exc
+                error = ExecutionError("Claude CLI returned invalid auth status")
+                diagnostics.attach_raw_error(
+                    error, stdout=auth_raw.stdout, stderr=auth_raw.stderr
+                )
+                raise error from exc
             if not isinstance(auth_payload, dict):
                 raise ExecutionError("Claude CLI returned invalid auth status")
             logged_in = auth_payload.get("loggedIn") is True
             auth_method = _safe_status_label(auth_payload.get("authMethod"))
             result = {
                 "status": "ok",
+                "request_id": request_id,
                 "principal": settings.principal,
                 "claude_version": version,
                 "cli_compatible": server_compatible,
@@ -526,16 +634,29 @@ def create_app(settings: Settings) -> FastMCP:
                 audit,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return result
         except BaseException as exc:
-            if audit is not None:
-                finish_call(
-                    settings.database_path,
-                    audit,
-                    status="error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            _finish_safely(
+                settings.database_path,
+                audit,
+                principal=settings.principal,
+                tool="claude_status",
+                conversation_id=None,
+                model="-",
+                status=_failure_status(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error_category=_error_metadata(exc)[0],
+                http_status=_error_metadata(exc)[1],
+                exit_code=_error_metadata(exc)[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
+            )
+            _annotate_error(exc, request_id, raw_saved)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc) from exc
 
     async def _execute_new(
@@ -555,16 +676,10 @@ def create_app(settings: Settings) -> FastMCP:
             use_web=clean_web,
             max_turns=clean_turns,
         )
-        parsed = parse_claude_result(
-            (
-                await _run(
-                    settings,
-                    command,
-                    timeout_seconds=clean_timeout,
-                    prompt=prompt,
-                )
-            ).stdout
+        raw = await _run(
+            settings, command, timeout_seconds=clean_timeout, prompt=prompt
         )
+        parsed = parse_claude_result(raw.stdout, raw.stderr)
         return parsed, _assert_requested_family(parsed, policy.family)
 
     @app.tool()
@@ -578,6 +693,8 @@ def create_app(settings: Settings) -> FastMCP:
         """Run one isolated query without creating a conversation mapping."""
         start = time.monotonic()
         audit: int | None = None
+        logical_model: str | None = None
+        request_id = diagnostics.new_request_id()
         try:
             clean_prompt = validate_prompt(prompt, settings.prompt_limit)
             logical_model = validate_model(model, settings)
@@ -593,6 +710,7 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_once",
                 conversation_id=None,
                 model=logical_model,
+                request_id=request_id,
             )
             parsed, actual_models = await _execute_new(
                 clean_prompt, logical_model, clean_web, clean_turns, clean_timeout
@@ -604,21 +722,36 @@ def create_app(settings: Settings) -> FastMCP:
                 actual_models=actual_models,
                 use_web=clean_web,
             )
+            result["request_id"] = request_id
             finish_call(
                 settings.database_path,
                 audit,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return result
         except BaseException as exc:
-            if audit is not None:
-                finish_call(
-                    settings.database_path,
-                    audit,
-                    status="timeout" if "timed out" in str(exc) else "error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            metadata = _error_metadata(exc)
+            _finish_safely(
+                settings.database_path,
+                audit,
+                principal=settings.principal,
+                tool="claude_once",
+                conversation_id=None,
+                model=logical_model,
+                status=_failure_status(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error_category=metadata[0],
+                http_status=metadata[1],
+                exit_code=metadata[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
+            )
+            _annotate_error(exc, request_id, raw_saved)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc, prompt) from exc
 
     @app.tool()
@@ -635,6 +768,7 @@ def create_app(settings: Settings) -> FastMCP:
         conversation: str | None = None
         logical_model: str | None = None
         audit: int | None = None
+        request_id = diagnostics.new_request_id()
         try:
             clean_prompt = validate_prompt(prompt, settings.prompt_limit)
             clean_title = _validate_title(title)
@@ -651,6 +785,7 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_start",
                 conversation_id=None,
                 model=logical_model,
+                request_id=request_id,
             )
             record = create_conversation(
                 settings.database_path,
@@ -689,33 +824,36 @@ def create_app(settings: Settings) -> FastMCP:
             )
             result["conversation_id"] = conversation
             result["title"] = clean_title
+            result["request_id"] = request_id
             finish_call(
                 settings.database_path,
                 audit,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return result
         except BaseException as exc:
-            status = "timeout" if "timed out" in str(exc) else "error"
+            status = _failure_status(exc)
             duration_ms = int((time.monotonic() - start) * 1000)
-            if audit is not None:
-                finish_call(
-                    settings.database_path,
-                    audit,
-                    status=status,
-                    duration_ms=duration_ms,
-                )
-            else:
-                record_audit_event(
-                    settings.database_path,
-                    principal=settings.principal,
-                    tool="claude_start",
-                    conversation_id=conversation,
-                    model=logical_model,
-                    status=status,
-                    duration_ms=duration_ms,
-                )
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            metadata = _error_metadata(exc)
+            _finish_safely(
+                settings.database_path,
+                audit,
+                principal=settings.principal,
+                tool="claude_start",
+                conversation_id=conversation,
+                model=logical_model,
+                status=status,
+                duration_ms=duration_ms,
+                error_category=metadata[0],
+                http_status=metadata[1],
+                exit_code=metadata[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
+            )
+            _annotate_error(exc, request_id, raw_saved)
             if conversation is not None:
                 try:
                     close_conversation(
@@ -723,6 +861,8 @@ def create_app(settings: Settings) -> FastMCP:
                     )
                 except BaseException:
                     pass
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc, prompt) from exc
 
     @app.tool()
@@ -736,13 +876,16 @@ def create_app(settings: Settings) -> FastMCP:
         start = time.monotonic()
         audit: int | None = None
         clean_conversation: str | None = None
+        owned_conversation: str | None = None
         logical_model: str | None = None
+        request_id = diagnostics.new_request_id()
         try:
             clean_conversation = validate_conversation_id(conversation_id)
             clean_prompt = validate_prompt(prompt, settings.prompt_limit)
             record = get_conversation(
                 settings.database_path, clean_conversation, settings.principal
             )
+            owned_conversation = clean_conversation
             if record.closed:
                 raise ConfigurationError("conversation is closed")
             if record.claude_session_id is None:
@@ -773,16 +916,10 @@ def create_app(settings: Settings) -> FastMCP:
                 use_web=use_web,
                 max_turns=clean_turns,
             )
-            parsed = parse_claude_result(
-                (
-                    await _run(
-                        settings,
-                        command,
-                        timeout_seconds=clean_timeout,
-                        prompt=clean_prompt,
-                    )
-                ).stdout
+            raw = await _run(
+                settings, command, timeout_seconds=clean_timeout, prompt=clean_prompt
             )
+            parsed = parse_claude_result(raw.stdout, raw.stderr)
             actual_models = _assert_requested_family(parsed, policy.family)
             if parsed["session_id"] is not None:
                 attach_claude_session(
@@ -799,42 +936,70 @@ def create_app(settings: Settings) -> FastMCP:
                 use_web=use_web,
             )
             result["conversation_id"] = clean_conversation
+            result["request_id"] = request_id
             finish_call(
                 settings.database_path,
                 audit,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return result
         except ContinueBurstLimitError as exc:
-            record_audit_event(
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            _finish_safely(
                 settings.database_path,
+                None,
                 principal=settings.principal,
                 tool="claude_continue",
-                conversation_id=clean_conversation,
+                conversation_id=owned_conversation,
                 model=logical_model,
                 status="burst_limited",
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error_category="rate_limit",
+                http_status=None,
+                exit_code=None,
+                request_id=request_id,
+                raw_log_saved=raw_saved,
             )
-            raise ConfigurationError(str(exc)) from exc
+            error = ConfigurationError(str(exc))
+            _annotate_error(error, request_id, raw_saved)
+            raise error from exc
         except BaseException as exc:
-            if audit is not None:
-                finish_call(
-                    settings.database_path,
-                    audit,
-                    status="timeout" if "timed out" in str(exc) else "error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            metadata = _error_metadata(exc)
+            _finish_safely(
+                settings.database_path,
+                audit,
+                principal=settings.principal,
+                tool="claude_continue",
+                conversation_id=owned_conversation,
+                model=logical_model,
+                status=_failure_status(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error_category=metadata[0],
+                http_status=metadata[1],
+                exit_code=metadata[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
+            )
+            _annotate_error(exc, request_id, raw_saved)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc, prompt) from exc
 
     @app.tool()
     async def claude_close(conversation_id: str) -> dict[str, object]:
         """Close only the bridge mapping; never delete Claude transcripts."""
         start = time.monotonic()
+        request_id = diagnostics.new_request_id()
+        owned_conversation: str | None = None
         try:
             clean_conversation = validate_conversation_id(conversation_id)
             close_conversation(
                 settings.database_path, clean_conversation, settings.principal
             )
+            owned_conversation = clean_conversation
             record_audit_event(
                 settings.database_path,
                 principal=settings.principal,
@@ -843,22 +1008,35 @@ def create_app(settings: Settings) -> FastMCP:
                 model=None,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return {
                 "status": "closed",
                 "conversation_id": clean_conversation,
                 "transcript_deleted": False,
+                "request_id": request_id,
             }
         except BaseException as exc:
-            record_audit_event(
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            metadata = _error_metadata(exc)
+            _finish_safely(
                 settings.database_path,
+                None,
                 principal=settings.principal,
                 tool="claude_close",
-                conversation_id=None,
+                conversation_id=owned_conversation,
                 model=None,
-                status="error",
+                status=_failure_status(exc),
                 duration_ms=int((time.monotonic() - start) * 1000),
+                error_category=metadata[0],
+                http_status=metadata[1],
+                exit_code=metadata[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
             )
+            _annotate_error(exc, request_id, raw_saved)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc) from exc
 
     @app.tool()
@@ -870,6 +1048,7 @@ def create_app(settings: Settings) -> FastMCP:
         """List owned conversations, newest activity first."""
         start = time.monotonic()
         audit: int | None = None
+        request_id = diagnostics.new_request_id()
         try:
             closed, page_limit, page_offset = _validate_list_pagination(
                 include_closed, limit, offset
@@ -880,6 +1059,7 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_list_conversations",
                 conversation_id=None,
                 model="-",
+                request_id=request_id,
             )
             summaries, total, has_more = list_conversations(
                 settings.database_path,
@@ -905,9 +1085,11 @@ def create_app(settings: Settings) -> FastMCP:
                 audit,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return {
                 "status": "ok",
+                "request_id": request_id,
                 "count": len(items),
                 "total_count": total,
                 "next_offset": page_offset + len(items) if has_more else None,
@@ -915,23 +1097,26 @@ def create_app(settings: Settings) -> FastMCP:
                 "conversations": items,
             }
         except BaseException as exc:
-            if audit is not None:
-                finish_call(
-                    settings.database_path,
-                    audit,
-                    status="error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
-            else:
-                record_audit_event(
-                    settings.database_path,
-                    principal=settings.principal,
-                    tool="claude_list_conversations",
-                    conversation_id=None,
-                    model=None,
-                    status="error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            metadata = _error_metadata(exc)
+            _finish_safely(
+                settings.database_path,
+                audit,
+                principal=settings.principal,
+                tool="claude_list_conversations",
+                conversation_id=None,
+                model=None,
+                status=_failure_status(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error_category=metadata[0],
+                http_status=metadata[1],
+                exit_code=metadata[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
+            )
+            _annotate_error(exc, request_id, raw_saved)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc) from exc
 
     @app.tool()
@@ -944,6 +1129,7 @@ def create_app(settings: Settings) -> FastMCP:
         clean_conversation: str | None = None
         owned_conversation: str | None = None
         audit: int | None = None
+        request_id = diagnostics.new_request_id()
         try:
             clean_conversation = validate_conversation_id(conversation_id)
             format_name = _validate_export_format(format)
@@ -962,6 +1148,7 @@ def create_app(settings: Settings) -> FastMCP:
                 tool="claude_export_conversation",
                 conversation_id=owned_conversation,
                 model="-",
+                request_id=request_id,
             )
             messages = _read_transcript(
                 settings.principal_work_dir, claude_session_id
@@ -974,31 +1161,36 @@ def create_app(settings: Settings) -> FastMCP:
                 messages=messages,
                 character_limit=settings.result_limit,
             )
+            result["request_id"] = request_id
             finish_call(
                 settings.database_path,
                 audit,
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
+                request_id=request_id,
             )
             return result
         except BaseException as exc:
-            if audit is not None:
-                finish_call(
-                    settings.database_path,
-                    audit,
-                    status="error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
-            else:
-                record_audit_event(
-                    settings.database_path,
-                    principal=settings.principal,
-                    tool="claude_export_conversation",
-                    conversation_id=owned_conversation,
-                    model=None,
-                    status="error",
-                    duration_ms=int((time.monotonic() - start) * 1000),
-                )
+            raw_saved = _save_raw_error(settings, exc, request_id)
+            metadata = _error_metadata(exc)
+            _finish_safely(
+                settings.database_path,
+                audit,
+                principal=settings.principal,
+                tool="claude_export_conversation",
+                conversation_id=owned_conversation,
+                model=None,
+                status=_failure_status(exc),
+                duration_ms=int((time.monotonic() - start) * 1000),
+                error_category=metadata[0],
+                http_status=metadata[1],
+                exit_code=metadata[2],
+                request_id=request_id,
+                raw_log_saved=raw_saved,
+            )
+            _annotate_error(exc, request_id, raw_saved)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             raise _error(exc) from exc
 
     return app

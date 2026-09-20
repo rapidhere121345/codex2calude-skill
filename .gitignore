@@ -16,3 +16,8 @@ claude_mcp_*_ed25519*
 partner-handoff-*
 *.key
 *.pem
+
+# Private diagnostics and audit databases must never enter source control.
+**/error-diagnostics/
+*.sqlite3
+*.sqlite3-*

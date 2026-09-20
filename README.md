@@ -119,7 +119,10 @@ manual check.
 - CLI failures are classified from bounded error envelopes on stdout and from
   stderr into fixed, sanitized categories. Only allowlisted error categories
   and explicitly structured HTTP status codes may cross the bridge; raw error
-  messages, prompts, account identifiers, paths, and credentials do not.
+  messages, prompts, account identifiers, paths, and credentials do not cross
+  the bridge or enter the structured audit table. Failed CLI output can be
+  retained separately in private, bounded server-side diagnostic files; see
+  the operator-only diagnostics section below.
   A successful `claude_status` checks CLI version and reported login state, not
   inference availability or model entitlement. Use one minimal `claude_once`
   request to verify the inference path; do not repeatedly retry an unchanged
@@ -143,6 +146,57 @@ manual check.
 
 Web content is still untrusted. Prompt injection can influence research output,
 so important findings should be verified.
+
+## Operator-only error diagnostics
+
+Tool invocations receive a server-generated, opaque `request_id`. The same
+identifier is returned to the caller and stored in `audit_log`, together with
+allowlisted `error_category`, `http_status`, and `exit_code` when available.
+The identifier is not a Claude-native session ID. Older audit rows retain NULL
+diagnostic fields: the upgrade cannot reconstruct historical error details.
+Requests rejected by the MCP protocol or argument schema before entering a tool
+handler may not have an application audit record.
+
+The structured audit table never stores prompts, answers, raw exception text,
+stdout, stderr, account identifiers, or client IP addresses. `duration_ms`
+remains total tool time, including queueing, not pure model latency. Unknown
+errors remain `unknown`; a successful status check does not establish that a
+model call or a particular resumed conversation will succeed.
+
+At the owner's explicit request, captured **failed** CLI stdout/stderr is also
+retained under:
+
+```text
+/var/lib/claude-mcp/research/state/error-diagnostics/<principal>/<request_id>.json
+```
+
+These files are sensitive: unredacted error output can contain private content
+or credentials echoed by an upstream component. Directories are mode `0700`,
+files are mode `0600`, and they are not exposed through MCP, Git, or the partner
+SSH key. No successful response, explicit prompt, environment dump, or OAuth
+credential file is deliberately copied into these diagnostics. Each output
+stream is bounded to 64 KiB and records whether truncation occurred. Each
+principal's store is limited to 100 files and 20 MiB; older files are removed
+when these limits are reached. Retention cleanup removes files older than seven
+days on writes and through the deployed daily maintenance timer (so an idle
+store can retain a file until the next daily sweep). Only regular
+UUID-named diagnostic files inside the private store are eligible for cleanup.
+
+On a failure, the partner should send the **request ID and sanitized error** to
+the operator, not a key or a transcript. The operator first correlates the audit
+record, then inspects the matching private file only if necessary. Do not paste
+raw diagnostic files into chat or research reports. A failure before CLI output
+exists, a storage failure, or truncation can leave incomplete raw evidence.
+The bridge still exposes exactly seven tools and grants no new partner access.
+
+The retention units are `claude-mcp-error-retention.service` and
+`claude-mcp-error-retention.timer`; the one-shot service has no network access
+and can write only the private diagnostic store. A rollback to a release that
+predates this helper must also stop/disable this timer. Retained evidence must
+not be deleted merely to roll back executable code. Existing MCP connections
+can keep an already-loaded older server after an atomic release switch; reconnect
+the MCP client to receive the new diagnostic fields. Do not interrupt an active
+research task just to refresh an idle client's tool connection.
 
 ## Account and policy boundary
 
