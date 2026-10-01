@@ -19,6 +19,77 @@ The bridge exposes exactly seven tools:
 - `claude_close(conversation_id)` — close the bridge mapping. It does not erase
   the Claude-side transcript, but further MCP continuation is rejected.
 
+## Gemini Research companion
+
+This repository also contains the `gemini-research` Skill and `gemini_research`
+MCP server. It keeps the Claude bridge's seven-tool interface, with a separate
+VPS service account, state directory, SSH principal, and owner/partner keys. The
+backend is the official **Antigravity CLI (`agy`) 1.2.14 or newer**. It uses the
+owner's Google OAuth subscription on the VPS; clients never receive Google
+credentials. The deployment does not select API-key or Vertex billing.
+
+- `gemini_status()` — CLI version, authentication availability, and model policy;
+  it uses the CLI's read-only `/usage` command without a model turn. Quota remains
+  unavailable when the bridge cannot safely normalize the CLI's quota schema.
+- `gemini_once(...)` — one independent query.
+- `gemini_start(...)` — start a titled task and return an opaque bridge UUID.
+- `gemini_list_conversations()` — list the current principal's tasks.
+- `gemini_export_conversation(conversation_id)` — export the bridge's stored
+  user/assistant turns for an owned task.
+- `gemini_continue(conversation_id, ...)` — resume the owned native conversation.
+- `gemini_close(conversation_id)` — reject further continuation while retaining
+  readable history.
+
+Install `skills/gemini-research`; the partner handoff is in
+[`examples/PARTNER_SETUP_GEMINI.zh-CN.md`](examples/PARTNER_SETUP_GEMINI.zh-CN.md).
+The production paths are:
+
+```text
+/opt/gemini-research-mcp/releases/<release>
+/opt/gemini-research-mcp/current -> releases/<release>
+/opt/antigravity/current/bin/agy
+/var/lib/gemini-mcp/research
+/var/lib/gemini-mcp/.gemini/config/agents/
+/var/lib/gemini-mcp/.gemini/antigravity-cli/settings.json
+/etc/ssh/gemini-mcp-authorized_keys
+/etc/ssh/sshd_config.claude-mcp  # shared TCP 22022 listener
+```
+
+`deploy/gemini-agents/` contains the two restricted agent definitions and the
+CLI permission settings. `use_web=true` permits `search_web` and
+`read_url_content`; offline calls use an empty tool list. File access, terminal
+commands, browser actuation, arbitrary MCP, and delegation are denied. Ordinary
+prompts use official NDJSON stdin with slash expansion disabled. Timeout and
+output bounds are enforced by the bridge; `max_turns` is retained for interface
+compatibility and is not a native `agy` limit. Native conversation IDs stay on
+the VPS. Successful task turns are stored privately for export, separate from
+the text-free audit records.
+
+Authenticate only on the VPS by running `agy` as `geminimcp`, selecting Google
+OAuth, and completing the [official remote SSH authorization
+flow](https://antigravity.google/docs/cli/install/#remote-ssh-oauth-flow).
+A personal login to the retired `gemini` CLI cannot serve this deployment.
+Owner and partner share the account's plan quota; their SSH keys and bridge
+conversation histories are separate. Public clients connect on the existing
+TCP 22022 SSH listener; a user-specific
+forced command routes the `geminimcp` account to the separate Gemini deployment.
+The retired 22023 listener is disabled and its VPS firewall rules removed.
+
+Production exposes only logical model `pro`, bound to the authenticated
+account's concrete Gemini Pro model and highest supported reasoning effort.
+The operator verifies these with `agy models` on the VPS; do not infer a CLI
+identifier from an API name. A root-owned `/etc/gemini-mcp-model-policy.conf`
+sets `GEMINI_PRO_CLI_VALUE` and `GEMINI_PRO_EFFORT`. Until bound, its `auto`
+placeholder is blocked by `GEMINI_MCP_REQUIRE_EXPLICIT_MODEL=1`, and
+`gemini_status.model_selection_ready` is false. Owner and partner use the same
+policy; started tasks retain their concrete model and effort for continuation.
+The bridge never automatically falls back to Flash or another provider.
+
+The deployment sets `useG1Credits=false`. Also confirm account AI Credit
+Overages is `Never` before claiming baseline-plan-only usage: personal OAuth
+does not by itself disable overage credits. Quota exhaustion stops the task.
+See the [official quota and overage policy](https://antigravity.google/docs/plans/).
+
 ## Hand this repository to another Codex
 
 Before sending the repository URL, the owner must grant the partner Read access

@@ -5,7 +5,7 @@ ListenAddress 0.0.0.0
 HostKey /etc/ssh/ssh_host_ed25519_key
 PidFile /run/sshd-claude-mcp.pid
 
-AllowUsers claudemcp
+AllowUsers claudemcp geminimcp
 AuthenticationMethods publickey
 PubkeyAuthentication yes
 PasswordAuthentication no
@@ -34,3 +34,6 @@ MaxSessions 4
 ClientAliveInterval 60
 ClientAliveCountMax 2
 LogLevel VERBOSE
+
+Match User geminimcp
+    AuthorizedKeysFile /etc/ssh/gemini-mcp-authorized_keys
