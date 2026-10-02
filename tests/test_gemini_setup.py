@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -228,6 +229,33 @@ def preinstall_gemini_config(
     config_path.chmod(0o600)
 
 
+def preinstall_direct_gemini_config(
+    workspace: tuple[Path, Path, Path, Path],
+) -> None:
+    codex_home, key_path, known_hosts_path, _ = workspace
+    args = "\n".join(
+        f"  {json.dumps(item)},"
+        for item in setup.ssh_args(key_path, known_hosts_path)
+    )
+    tools = ",\n".join(f"  {json.dumps(item)}" for item in setup.TOOLS)
+    lines = [
+        "[mcp_servers.gemini_research]",
+        'command = "ssh"',
+        "args = [",
+        args,
+        "]",
+        "startup_timeout_sec = 20",
+        "tool_timeout_sec = 720",
+        "enabled_tools = [",
+        tools,
+        "]",
+    ]
+    (codex_home / "config.toml").write_text(
+        existing_config() + "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_staged_partner_import_verifies_mcp_without_replacing_claude(
     fake_clis: tuple[Path, Path],
     workspace: tuple[Path, Path, Path, Path],
@@ -343,6 +371,109 @@ def test_partner_import_adds_gemini_without_replacing_claude(
     assert invocation[invocation.index("-i") + 1] == str(key_path)
     assert f"UserKnownHostsFile={known_hosts_path}" in invocation
     assert invocation[-1] == f"{setup.SSH_USER}@{setup.HOST}"
+
+
+def test_existing_exact_direct_gemini_config_is_backed_up_and_migrated(
+    fake_clis: tuple[Path, Path],
+    workspace: tuple[Path, Path, Path, Path],
+) -> None:
+    initial = install_workspace(workspace)
+    preinstall_direct_gemini_config(workspace)
+    codex_home, key_path, known_hosts_path, _ = workspace
+    direct_registration = (codex_home / "config.toml").read_bytes()
+
+    assert run_import(workspace) == 0
+
+    import tomllib
+
+    parsed = tomllib.loads((codex_home / "config.toml").read_text("utf-8"))
+    assert parsed["mcp_servers"]["claude_research"]["args"][-1] == (
+        f"claudemcp@{setup.HOST}"
+    )
+    assert parsed["mcp_servers"]["gemini_research"] == setup.expected_config(
+        key_path, known_hosts_path
+    )
+    proxy_args = parsed["mcp_servers"]["gemini_research"]["args"]
+    assert proxy_args[:4] == [
+        str(setup.RECONNECT_PROXY),
+        "ssh",
+        "-F",
+        "none",
+    ]
+    digest = hashlib.sha256(direct_registration).hexdigest()[:16]
+    assert (
+        codex_home / f"config.toml.pre-gemini-{digest}.bak"
+    ).read_bytes() == direct_registration
+
+
+def test_existing_different_backup_does_not_block_safe_migration(
+    fake_clis: tuple[Path, Path],
+    workspace: tuple[Path, Path, Path, Path],
+) -> None:
+    install_workspace(workspace)
+    preinstall_direct_gemini_config(workspace)
+    codex_home, key_path, known_hosts_path, _ = workspace
+    config_path = codex_home / "config.toml"
+    before = config_path.read_bytes()
+    fixed_backup = codex_home / "config.toml.pre-gemini.bak"
+    fixed_backup.write_bytes(b"older unrelated pre-gemini backup\n")
+    fixed_backup.chmod(0o600)
+
+    assert run_import(workspace) == 0
+
+    import tomllib
+
+    parsed = tomllib.loads(config_path.read_text("utf-8"))
+    assert parsed["mcp_servers"]["claude_research"] is not None
+    assert parsed["mcp_servers"]["gemini_research"] == setup.expected_config(
+        key_path, known_hosts_path
+    )
+    assert fixed_backup.read_bytes() == b"older unrelated pre-gemini backup\n"
+    digest = hashlib.sha256(before).hexdigest()[:16]
+    private_backup = codex_home / f"config.toml.pre-gemini-{digest}.bak"
+    assert private_backup.read_bytes() == before
+    assert stat.S_IMODE(private_backup.stat().st_mode) == 0o600
+
+
+def test_config_backup_retry_is_idempotent_for_same_content(
+    fake_clis: tuple[Path, Path],
+    workspace: tuple[Path, Path, Path, Path],
+) -> None:
+    install_workspace(workspace)
+    codex_home, _, _, _ = workspace
+    config_path = codex_home / "config.toml"
+    before = config_path.read_bytes()
+    digest = hashlib.sha256(before).hexdigest()[:16]
+    backup_path = codex_home / f"config.toml.pre-gemini-{digest}.bak"
+    backup_path.write_bytes(before)
+    backup_path.chmod(0o600)
+
+    assert run_import(workspace) == 0
+
+    assert backup_path.read_bytes() == before
+
+
+def test_changed_direct_gemini_transport_conflict_is_rejected(
+    fake_clis: tuple[Path, Path],
+    workspace: tuple[Path, Path, Path, Path],
+) -> None:
+    install_workspace(workspace)
+    preinstall_direct_gemini_config(workspace)
+    codex_home, _, _, _ = workspace
+    config_path = codex_home / "config.toml"
+    before = config_path.read_bytes()
+    config_path.write_text(
+        config_path.read_text("utf-8").replace(
+            f"{setup.SSH_USER}@{setup.HOST}", "other-user@example.invalid"
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_import(workspace) == 1
+    assert config_path.read_bytes() == before.replace(
+        f"{setup.SSH_USER}@{setup.HOST}".encode("utf-8"),
+        b"other-user@example.invalid",
+    )
 
 
 def test_import_rerun_fails_closed_and_preserves_installed_key(
@@ -601,3 +732,10 @@ def test_verify_rejects_new_status_auto_placeholder_even_if_flags_claim_ready(
     output = capsys.readouterr()
     assert "远端 Pro 模型尚未绑定；请 Owner 完成 OAuth 后核实模型配置" in output.err
     assert "verify: 通过" not in output.out
+
+
+def test_gemini_forced_command_limits_streams_to_four_mib() -> None:
+    wrapper = (SETUP_PATH.parents[1] / "scripts" / "stdio-forced-command.sh").read_text()
+
+    assert "GEMINI_MCP_OUTPUT_LIMIT=4194304" in wrapper
+    assert "GEMINI_MCP_RESULT_LIMIT=4194304" in wrapper

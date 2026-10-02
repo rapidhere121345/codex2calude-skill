@@ -204,9 +204,9 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
     output_limit = _bounded_int(
         source.get("GEMINI_MCP_OUTPUT_LIMIT"),
         "GEMINI_MCP_OUTPUT_LIMIT",
-        100_000,
+        4_194_304,
         1_000,
-        1_000_000,
+        16_777_216,
     )
     required_version = _required_version(source.get("GEMINI_MCP_REQUIRED_CLI_VERSION"))
     agy_bin = source.get("AGY_BIN")
@@ -258,9 +258,9 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         result_limit=_bounded_int(
             source.get("GEMINI_MCP_RESULT_LIMIT"),
             "GEMINI_MCP_RESULT_LIMIT",
-            100_000,
+            4_194_304,
             1_000,
-            1_000_000,
+            16_777_216,
         ),
         required_cli_version=required_version,
         default_model=default_model,

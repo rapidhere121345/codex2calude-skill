@@ -51,6 +51,15 @@ When the user asks to install or configure this bridge:
 
 The setup script is fail-closed. It does not overwrite an existing key,
 different host pin, or conflicting `gemini_research` MCP entry.
+For new installations it registers a reconnecting stdio proxy around the same
+pinned, dedicated-key SSH command. An existing registration is migrated only
+when its complete SSH target, identity, host pin, and seven-tool policy exactly
+match the previous direct form; all other conflicts stop setup. The proxy only
+restores the transport by respawning SSH and replaying the MCP initialize
+handshake. It never replays a `tools/call` whose result is unknown, and callers
+must issue a new request only when doing so is safe for that tool. It is not a
+standalone research client and does not change the seven host-native MCP tools,
+authentication, or model policy.
 For an already-authorized partner upgrade, install the new Skill into a fresh
 staging directory first: the Skill installer refuses an existing destination.
 Back up the old Skill outside the skills directory and replace it with the

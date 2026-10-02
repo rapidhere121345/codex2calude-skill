@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections.abc import Mapping
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,8 @@ LEGACY_TOOLS = (
 )
 PRINCIPALS = ("owner", "partner")
 FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{43}$")
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+RECONNECT_PROXY = SKILL_ROOT / "scripts" / "mcp_ssh_reconnect.py"
 
 
 class SetupError(RuntimeError):
@@ -207,6 +210,34 @@ def expected_config(
     ssh_port: str = SSH_PORT,
 ) -> dict[str, Any]:
     return {
+        "command": "python3",
+        "args": [
+            str(RECONNECT_PROXY),
+            "ssh",
+            "-F",
+            "none",
+            *ssh_args(
+                key_path,
+                known_hosts_path,
+                ssh_user=ssh_user,
+                ssh_port=ssh_port,
+            ),
+        ],
+        "startup_timeout_sec": 20,
+        "tool_timeout_sec": 720,
+        "enabled_tools": list(tools),
+    }
+
+
+def direct_config(
+    key_path: Path,
+    known_hosts_path: Path,
+    tools: tuple[str, ...] = TOOLS,
+    *,
+    ssh_user: str = SSH_USER,
+    ssh_port: str = SSH_PORT,
+) -> dict[str, Any]:
+    return {
         "command": "ssh",
         "args": ssh_args(
             key_path,
@@ -264,7 +295,10 @@ def backup_file(raw: bytes, backup_path: Path, label: str) -> Path:
 
 
 def backup_config(config_path: Path, raw: bytes) -> Path:
-    backup_path = config_path.with_name(f"{config_path.name}.pre-gemini.bak")
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    backup_path = config_path.with_name(
+        f"{config_path.name}.pre-gemini-{digest}.bak"
+    )
     return backup_file(raw, backup_path, "配置")
 
 
@@ -435,8 +469,8 @@ def validate_config(
     section = servers["gemini_research"]
     if section == expected:
         return "current", raw
-    known_generated_configs = tuple(
-        expected_config(
+    direct_generated_configs = tuple(
+        direct_config(
             key_path,
             known_hosts_path,
             tools,
@@ -448,7 +482,9 @@ def validate_config(
         for tools in (TOOLS, LEGACY_TOOLS)
         if (ssh_port, ssh_user, tools) != (SSH_PORT, SSH_USER, TOOLS)
     )
-    if section in known_generated_configs:
+    if section in direct_generated_configs or section == direct_config(
+        key_path, known_hosts_path
+    ):
         return "legacy", raw
     raise SetupError(
         "已有 [mcp_servers.gemini_research] 与期望配置不完全一致；为避免覆盖已停止"
@@ -469,7 +505,7 @@ def config_block(key_path: Path, known_hosts_path: Path) -> str:
     args = "\n".join(f"  {toml_string(item)}," for item in expected["args"])
     return f'''
 [mcp_servers.gemini_research]
-command = "ssh"
+command = {toml_string(expected["command"])}
 args = [
 {args}
 ]

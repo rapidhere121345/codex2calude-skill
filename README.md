@@ -28,6 +28,10 @@ backend is the official **Antigravity CLI (`agy`) 1.2.14 or newer**. It uses the
 owner's Google OAuth subscription on the VPS; clients never receive Google
 credentials. The deployment does not select API-key or Vertex billing.
 
+Each raw Gemini CLI stream defaults to 4 MiB (4,194,304 bytes) and can be capped
+at up to 16 MiB; the final result remains character-based and likewise defaults
+to 4,194,304 with a 16,777,216-character maximum.
+
 - `gemini_status()` — CLI version, authentication availability, and model policy;
   it uses the CLI's read-only `/usage` command without a model turn. Quota remains
   unavailable when the bridge cannot safely normalize the CLI's quota schema.
@@ -51,6 +55,14 @@ MCP registration, and a read-only `gemini_status` handshake. All research and
 acceptance inference go through the host-loaded `gemini_research` MCP tools; if
 that catalog has not refreshed yet, wait for the host rather than using a
 bundled command-line client.
+The registration wraps the same pinned, dedicated-key SSH command in
+`scripts/mcp_ssh_reconnect.py`. If that transport dies, the proxy keeps Codex's
+stdio connection open, respawns SSH, replays only the MCP initialize handshake,
+and then serves later requests. A `tools/call` that was in flight when the
+transport died receives an explicit unknown-result error; the proxy never
+blindly replays such a call because the server may already have executed it.
+The reconnect backoff and offline queue timeout use
+`GEMINI_MCP_RECONNECT_DELAYS` and `GEMINI_MCP_RECONNECT_QUEUE_TIMEOUT`.
 Updating an already authorized partner reuses that partner's installed
 MCP-dedicated key and existing MCP registration. The Skill installer refuses
 an existing destination: download into a fresh staging directory, then back up
