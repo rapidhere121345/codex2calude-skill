@@ -35,5 +35,6 @@ ClientAliveInterval 60
 ClientAliveCountMax 2
 LogLevel VERBOSE
 
+# Separate Gemini deployment routed through the same public SSH listener.
 Match User geminimcp
     AuthorizedKeysFile /etc/ssh/gemini-mcp-authorized_keys

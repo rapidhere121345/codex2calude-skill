@@ -118,6 +118,7 @@ def mcp_stdout(
     principal: str = "partner",
     logged_in: bool = True,
     missing_tool: bool = False,
+    quota_source: str = "claude_code_statusline",
 ) -> str:
     tools = [
         {"name": name}
@@ -147,7 +148,7 @@ def mcp_stdout(
                     "models": {"opus": {"cli_supported": True}},
                     "opus_quota": {
                         "available": False,
-                        "source": "claude_code_statusline",
+                        "source": quota_source,
                         "reason": "statusline_observation_unavailable",
                         "manual_check_url": "https://claude.ai/usage",
                     },
@@ -466,6 +467,30 @@ def test_verify_rejects_missing_opus_quota_contract(
     del responses[2]["result"]["structuredContent"]["opus_quota"]
     stdout = "\n".join(json.dumps(item) for item in responses) + "\n"
     mock_verify(monkeypatch, stdout=stdout)
+
+    assert run(workspace, "--verify") == 1
+
+
+def test_verify_accepts_official_usage_command_quota_source(
+    workspace: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_verify(
+        monkeypatch,
+        stdout=mcp_stdout(quota_source="claude_code_usage_command"),
+    )
+
+    assert run(workspace, "--verify") == 0
+
+
+def test_verify_rejects_unknown_quota_source(
+    workspace: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_verify(
+        monkeypatch,
+        stdout=mcp_stdout(quota_source="undocumented_endpoint"),
+    )
 
     assert run(workspace, "--verify") == 1
 

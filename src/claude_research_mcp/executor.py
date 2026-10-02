@@ -7,7 +7,9 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import secrets
 import signal
+import stat
 import subprocess
 
 from .config import Settings
@@ -18,6 +20,11 @@ from .diagnostics import attach_raw_error
 # a per-invocation safety bound, not a bridge call quota.
 DEFAULT_MAX_TURNS = 20
 DEFAULT_TIMEOUT_SECONDS = 600
+USAGE_COMMAND_TIMEOUT_SECONDS = 25
+USAGE_COMMAND_INPUT_DELAY_SECONDS = 5
+USAGE_COMMAND_RENDER_SECONDS = 10
+USAGE_COMMAND_OUTPUT_LIMIT = 131_072
+TMUX_BIN = Path("/usr/bin/tmux")
 MIN_MAX_TURNS = 1
 MAX_MAX_TURNS = 100
 MIN_TIMEOUT_SECONDS = 1
@@ -213,6 +220,25 @@ def build_version_command(claude_bin: Path) -> list[str]:
 
 def build_auth_status_command(claude_bin: Path) -> list[str]:
     return [str(claude_bin), "auth", "status"]
+
+
+def build_usage_command(claude_bin: Path) -> list[str]:
+    """Fixed argv for Claude's official interactive /usage screen."""
+
+    return [
+        str(claude_bin),
+        "--no-chrome",
+        "--safe-mode",
+        "--strict-mcp-config",
+        "--mcp-config",
+        EMPTY_MCP_CONFIG,
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        "opus",
+        "--tools",
+        "",
+    ]
 
 
 def build_ask_command(
@@ -440,6 +466,17 @@ async def _read_bounded(
         accumulator.extend(chunk)
 
 
+def usage_environment() -> dict[str, str]:
+    environment = child_environment()
+    # Claude Code cannot load /usage when all nonessential traffic is blocked.
+    # Remove exactly that one switch for this official quota probe; every
+    # telemetry, update, marketplace, and MCP restriction remains enabled.
+    environment.pop("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", None)
+    environment["TERM"] = "xterm-256color"
+    environment["TZ"] = "UTC"
+    return environment
+
+
 async def _stop_process_group(process: asyncio.subprocess.Process) -> None:
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -608,3 +645,140 @@ async def run_command(
         )
         raise error
     return ExecutionResult(stdout, stderr, process.returncode or 0)
+
+
+def _validated_tmux_bin() -> Path:
+    """Resolve the fixed root-owned terminal renderer used by the quota probe."""
+
+    try:
+        path = TMUX_BIN.resolve(strict=True)
+        metadata = path.stat()
+    except (OSError, RuntimeError) as exc:
+        raise ExecutionError("Claude usage terminal is unavailable") from exc
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_mode & 0o022
+        or not os.access(path, os.X_OK)
+    ):
+        raise ExecutionError("Claude usage terminal is unavailable")
+    return path
+
+
+async def _run_tmux_client(
+    tmux_bin: Path,
+    arguments: list[str],
+    *,
+    cwd: Path,
+    environment: dict[str, str],
+    output_limit: int = 0,
+    check: bool = True,
+) -> bytes:
+    stdout = subprocess.PIPE if output_limit else subprocess.DEVNULL
+    try:
+        process = await asyncio.create_subprocess_exec(
+            str(tmux_bin),
+            *arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=subprocess.DEVNULL,
+            cwd=cwd,
+            env=environment,
+            start_new_session=True,
+        )
+    except (OSError, ValueError) as exc:
+        raise ExecutionError("Claude usage terminal failed") from exc
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), timeout=5)
+    except asyncio.TimeoutError as exc:
+        await _stop_process_group(process)
+        raise ExecutionError("Claude usage terminal timed out") from exc
+    if check and process.returncode != 0:
+        raise ExecutionError("Claude usage terminal failed")
+    output = output or b""
+    if len(output) > output_limit:
+        raise ExecutionError("Claude usage command exceeded its output limit")
+    return output
+
+
+async def run_usage_command(claude_bin: Path, *, cwd: Path) -> str:
+    """Render Claude's blank interactive ``/usage`` screen and bound output."""
+
+    tmux_bin = _validated_tmux_bin()
+    environment = usage_environment()
+    socket_name = f"claude-usage-{os.getpid()}-{secrets.token_hex(8)}"
+    session_name = "usage"
+    prefix = ["-L", socket_name]
+    started = False
+
+    async def interaction() -> bytes:
+        nonlocal started
+        started = True
+        await _run_tmux_client(
+            tmux_bin,
+            [
+                *prefix,
+                "-f",
+                "/dev/null",
+                "new-session",
+                "-d",
+                "-x",
+                "120",
+                "-y",
+                "40",
+                "-s",
+                session_name,
+                *build_usage_command(claude_bin),
+            ],
+            cwd=cwd,
+            environment=environment,
+        )
+        await asyncio.sleep(USAGE_COMMAND_INPUT_DELAY_SECONDS)
+        await _run_tmux_client(
+            tmux_bin,
+            [*prefix, "send-keys", "-t", session_name, "-l", "/usage"],
+            cwd=cwd,
+            environment=environment,
+        )
+        await _run_tmux_client(
+            tmux_bin,
+            [*prefix, "send-keys", "-t", session_name, "Enter"],
+            cwd=cwd,
+            environment=environment,
+        )
+        await asyncio.sleep(USAGE_COMMAND_RENDER_SECONDS)
+        return await _run_tmux_client(
+            tmux_bin,
+            [
+                *prefix,
+                "capture-pane",
+                "-p",
+                "-J",
+                "-S",
+                "-80",
+                "-t",
+                session_name,
+            ],
+            cwd=cwd,
+            environment=environment,
+            output_limit=USAGE_COMMAND_OUTPUT_LIMIT,
+        )
+
+    try:
+        rendered = await asyncio.wait_for(
+            interaction(), timeout=USAGE_COMMAND_TIMEOUT_SECONDS
+        )
+        return rendered.decode("utf-8", errors="replace")
+    except asyncio.TimeoutError as exc:
+        raise ExecutionError("Claude usage command timed out") from exc
+    finally:
+        if started:
+            await asyncio.shield(
+                _run_tmux_client(
+                    tmux_bin,
+                    [*prefix, "kill-server"],
+                    cwd=cwd,
+                    environment=environment,
+                    check=False,
+                )
+            )

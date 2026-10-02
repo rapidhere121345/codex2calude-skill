@@ -69,8 +69,9 @@ conflict and ask before changing it manually.
   current contract rejects further MCP continuation of that conversation.
 - Use `claude_status` on first use, when the user asks about Opus allowance, or
   while diagnosing availability; do not call it before every request. In
-  `opus_quota`, `five_hour` and `seven_day` come only from Claude Code's
-  official statusline `rate_limits` observation. Report the returned
+  `opus_quota`, `five_hour` and `seven_day` come from Claude Code's official
+  statusline `rate_limits` observation or its official interactive `/usage`
+  fallback (`source: claude_code_usage_command`). Report the returned
   used/remaining percentages, reset times, `source`, `observed_at`, and
   staleness exactly. If quota is unavailable, say unknown rather than treating
   it as zero usage or unlimited capacity, and point the user to the returned

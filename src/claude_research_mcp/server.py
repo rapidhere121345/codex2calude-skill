@@ -36,6 +36,7 @@ from .executor import (
     build_version_command,
     classify_claude_error,
     run_command,
+    run_usage_command,
     truncate_text,
     validate_options,
 )
@@ -55,7 +56,14 @@ from .persistence import (
     record_audit_event,
     reserve_call,
 )
-from .usage import get_opus_quota_status
+from .usage import (
+    get_cached_usage_command_status,
+    get_opus_quota_status,
+    parse_usage_command_output,
+    usage_command_cache_path,
+    usage_command_unavailable,
+    write_usage_command_cache,
+)
 
 
 INSTRUCTIONS = (
@@ -347,6 +355,32 @@ async def _run(
         )
 
 
+async def _run_usage_probe(settings: Settings) -> dict[str, object]:
+    """Try the official /usage screen without ever failing claude_status."""
+
+    sample_path = settings.work_root / "state" / "statusline-observation.json"
+    cache_path = usage_command_cache_path(sample_path)
+    cached = get_cached_usage_command_status(cache_path)
+    if cached is not None:
+        return cached
+    try:
+        async with concurrency_slot(settings.lock_dir, settings.concurrency):
+            # The global lock can wait behind another status call; another
+            # principal may have refreshed the shared subscription cache.
+            cached = get_cached_usage_command_status(cache_path)
+            if cached is not None:
+                return cached
+            output = await run_usage_command(
+                settings.claude_bin, cwd=settings.principal_work_dir
+            )
+            parsed = parse_usage_command_output(output)
+            write_usage_command_cache(cache_path, parsed)
+            refreshed = get_cached_usage_command_status(cache_path)
+            return refreshed if refreshed is not None else usage_command_unavailable()
+    except Exception:
+        return usage_command_unavailable()
+
+
 def _result(
     parsed: dict[str, object],
     *,
@@ -622,13 +656,10 @@ def create_app(settings: Settings) -> FastMCP:
                         get_opus_quota_status,
                         settings.work_root / "state" / "statusline-observation.json",
                     )
+                    if not result["opus_quota"].get("available"):
+                        result["opus_quota"] = await _run_usage_probe(settings)
                 except Exception:
-                    result["opus_quota"] = {
-                        "available": False,
-                        "source": "claude_code_statusline",
-                        "reason": "statusline_observation_unavailable",
-                        "manual_check_url": "https://claude.ai/usage",
-                    }
+                    result["opus_quota"] = usage_command_unavailable()
             finish_call(
                 settings.database_path,
                 audit,

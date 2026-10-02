@@ -665,7 +665,8 @@ def check_responses(stdout: str, principal: str) -> None:
     quota = status.get("opus_quota")
     if (
         not isinstance(quota, dict)
-        or quota.get("source") != "claude_code_statusline"
+        or quota.get("source")
+        not in {"claude_code_statusline", "claude_code_usage_command"}
         or not isinstance(quota.get("available"), bool)
     ):
         raise VerifyError("claude_status 未提供有效的 Opus 额度状态")

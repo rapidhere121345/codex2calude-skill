@@ -101,8 +101,10 @@ enabled_tools = [
 - `logged_in`: `true`
 - `subscription_type`: `pro`
 - 当前允许模型只有 `opus`
-- `opus_quota`: 来自 Claude Code 官方 statusline `rate_limits` 的 5 小时/7
-  天额度观测，包含 `source`、`observed_at`、`stale` 和 `age_seconds`。
+- `opus_quota`: 优先来自 Claude Code 官方 statusline `rate_limits` 的
+  5 小时/7 天额度观测；缺失或过期时回退官方 `/usage` 并显示
+  `claude_code_usage_command`。结果包含 `source`、`observed_at`、
+  `stale` 和 `age_seconds`。
   `available: false` 代表未知，不代表尚未使用或额度无限；按返回的
   `manual_check_url` 人工检查官方用量页
 

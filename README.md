@@ -40,11 +40,15 @@ credentials. The deployment does not select API-key or Vertex billing.
 - `gemini_close(conversation_id)` — reject further continuation while retaining
   readable history.
 
-Install `skills/gemini-research`; the partner handoff is in
+Install `skills/gemini-research` from the repository's `main` branch:
+[GitHub](https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-research).
+The canonical partner flow fetches the Skill there and does not require a Skill
+ZIP; the owner sends only the dedicated private partner-access ZIP separately
+through a controlled channel. The handoff is in
 [`examples/PARTNER_SETUP_GEMINI.zh-CN.md`](examples/PARTNER_SETUP_GEMINI.zh-CN.md).
-The private offline Skill package includes `scripts/call_tool.py`, a restricted
-client for this same MCP endpoint. It lets Codex verify and use the bridge in
-the installation conversation before its native tool catalog is reloaded.
+The installed Skill includes `scripts/call_tool.py`, a restricted client for
+this same MCP endpoint. It lets Codex verify and use the bridge in the
+installation conversation before its native tool catalog is reloaded.
 The production paths are:
 
 ```text
@@ -111,11 +115,13 @@ Acceptance completed on 2026-10-02 with official `agy` 1.2.14 personal OAuth.
 Owner and a freshly installed partner-principal client both passed real MCP
 queries, native continuation, list/export/close, and cross-principal rejection.
 Remote command execution and file writing were verified on the VPS; web mode
-read an official source successfully. Both conversation snapshots retain
-`gemini-3.1-pro-high` with `high` effort. The shared TCP 22022 listener was
-unchanged. CLI init lists a global catalogue, including names unavailable to
-the execution registry; task definitions include the supported ordinary tools.
-The private partner Skill/access packages can now be handed over by the owner.
+read an official source successfully. The production policy binds `pro` to
+`gemini-3.1-pro-high` with `high` effort; do not infer a currently billed model
+when usage metadata is empty. The shared TCP 22022 listener was unchanged. CLI
+init lists a global catalogue, including names unavailable to the execution
+registry; task definitions include the supported ordinary tools. The partner
+fetches the Skill from GitHub `main`; the owner sends the dedicated access-key
+ZIP separately.
 
 The deployment sets `useG1Credits=false` (also the default). Account AI Credit
 Overages `Never` has not yet been confirmed, so baseline-plan-only usage is not

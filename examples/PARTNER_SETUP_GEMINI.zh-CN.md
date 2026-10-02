@@ -7,18 +7,20 @@ Google credentials、tokens、keys 不交付给 partner，无需本地 provider 
 
 2026-10-02 自测验收已完成：官方 `agy` 1.2.14 个人 OAuth 已 eligible，Owner 和
 干净环境中实际安装的 partner 客户端均通过真实 MCP 调用、续聊、列表、导出、关闭
-及跨 principal 拒绝检查；VPS 命令、文件写入和官方网页读取通过。模型快照固定
-`gemini-3.1-pro-high` / `high`，公网仍复用 22022。附件可由 Owner 私下交付。
+及跨 principal 拒绝检查；VPS 命令、文件写入和官方网页读取通过。生产策略将逻辑
+模型 `pro` 绑定到 `gemini-3.1-pro-high` / `high`，公网仍复用 22022。Owner 私下
+交付专用 access ZIP；不要把空 usage metadata 解读为当前调用的实际计费模型。
 
-Owner 先完成远端真实调用和续聊验收，再通过一对一渠道交付
-`gemini-partner-skill.zip` 与这位 partner 专用的 `gemini-partner-access.zip`。
-Skill 包可单独复用，access 包是私密凭据，不进入代码库。
+标准安装流程从 GitHub `main` 获取 `gemini-research` Skill，**不需要 Skill ZIP**。
+Owner 只通过一对一受控渠道交付这位 partner 专用的
+`gemini-partner-access.zip`；它含私密凭据，不进入代码库。安装地址：
+https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-research
 仅 OAuth 或模型目录可读不代表可用：地区资格、模型绑定和真实推理必须分别通过。
 
-将下面这段话与两个附件一起交给 partner 的 Codex：
+将下面这段话与 `gemini-partner-access.zip` 一起交给 partner 的 Codex：
 
 ```text
-请用这两个附件安装并验收 gemini-research：安全解压 gemini-partner-skill.zip，将其中 gemini-research 复制到 $CODEX_HOME/skills/（未设置时用 ~/.codex/skills/），读安装后的 SKILL.md；解压 gemini-partner-access.zip，将交付私钥权限设为 600，不查看、展示或上传私钥内容。在安装后的 Skill 目录运行 python3 scripts/setup_client.py --principal partner --import-key <交付私钥绝对路径> --verify。要求预授权导入、恰好七个 gemini 工具、principal=partner、availability.eligible=true、default_model=pro、model_selection_ready=true。随后做一次小的离线 Gemini Pro 调用，问题为“只回复 GEMINI_PRO_ACCEPTANCE_OK。”；本会话若尚未加载 MCP 工具，就用 scripts/call_tool.py 调用同一个受限 MCP：--tool gemini_once --arguments-file <包含 model=pro、use_web=false、timeout_seconds=120 的 JSON 文件绝对路径> --prompt-stdin，并通过 stdin 输入问题。核对实际回答，报告安装与真实调用结果；以后直接按 gemini-research 提问即可。需要 Python 3.11+ 和 OpenSSH，无需本地 Google 登录、Gemini/Antigravity CLI 或 API key。遇到密钥、host pin、配置冲突或远端不可用时停止并报告固定错误，不覆盖或换模型；验证成功后删除交付私钥副本及 access 包，保留已安装的专用密钥。
+请使用 $skill-installer 从 https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-research 安装 gemini-research Skill，并阅读其中的 SKILL.md；不要等待或索取 Skill ZIP。安全解压随附的 gemini-partner-access.zip，将交付私钥文件权限设为 600，不查看、展示或上传私钥内容。在安装后的 Skill 目录运行 python3 scripts/setup_client.py --principal partner --import-key <交付私钥绝对路径> --verify。要求脚本报告 `pre-authorized import`、恰好七个 gemini 工具、principal=partner、availability.eligible=true、default_model=pro、model_selection_ready=true，并确认策略为 `gemini-3.1-pro-high` / `high`；空 usage metadata 不能证明当前调用的实际计费模型。随后做一次小的离线 Gemini Pro 调用，问题为“只回复 GEMINI_PRO_ACCEPTANCE_OK。”；本会话若尚未加载 MCP 工具，就用 scripts/call_tool.py 调用同一个受限 MCP：--tool gemini_once --arguments-file <包含 model=pro、use_web=false、timeout_seconds=120 的 JSON 文件绝对路径> --prompt-stdin，并通过 stdin 输入问题。核对实际回答并报告安装与真实调用结果；以后直接按 gemini-research 提问即可。需要 Python 3.11+ 和 OpenSSH，无需本地 Google 登录、Gemini/Antigravity CLI 或 API key。遇到密钥、host pin、配置冲突或远端不可用时停止并报告固定错误，不覆盖或换模型；验证成功后删除交付私钥副本及 access ZIP，保留已安装的专用密钥。
 ```
 
 本对话可以直接使用打包的 `scripts/call_tool.py`，它只接受安装器写入的完整配置、
@@ -27,9 +29,9 @@ Skill 包可单独复用，access 包是私密凭据，不进入代码库。
 helper 支持 `--codex-home`；它不接受 `--principal`，身份由专用 key 决定。
 续聊、导出等参数通过 `--arguments-file` 传递，只使用 bridge 的 opaque conversation_id。
 
-如果使用仓库安装，需要 partner 已拥有私有仓库 Read 权限：
-https://github.com/rapidhere121345/codex2calude-skill/tree/gemini-antigravity/skills/gemini-research
-离线附件不依赖 GitHub 访问权限。
+GitHub 安装要求 partner 已拥有私有仓库 Read 权限。若主线 GitHub 安装暂不可用，
+Owner 可另行安排私下传输 Skill 目录作为非标准备用引导；这不改变 canonical
+流程，也不意味着需要把 Skill ZIP 与 access ZIP 一起交付。
 
 MCP 会话映射与查询按 principal 过滤；Owner 与 partner 共享套餐额度和一个服务端并发槽。
 可信 Owner/partner 可以让 Gemini 为明确任务使用远端文件、命令等普通工具。

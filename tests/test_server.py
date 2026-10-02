@@ -665,12 +665,16 @@ def test_no_hourly_bridge_quota_setting_or_twenty_call_limit(tmp_path):
     assert rows == [("claude_once", "success")] * 25
 
 
-def test_status_and_fable_version_gate(tmp_path):
+def test_status_and_fable_version_gate(tmp_path, monkeypatch):
     settings = make_settings(
         tmp_path,
         CLAUDE_MCP_MODELS='{"opus":{"cli_value":"opus","family":"opus"},"fable":{"cli_value":"fable","family":"fable","min_cli_version":"2.1.257"}}',
     )
     fake_claude(settings.claude_bin)
+    async def unavailable_probe(_settings):
+        return server_module.usage_command_unavailable()
+
+    monkeypatch.setattr(server_module, "_run_usage_probe", unavailable_probe)
     status = asyncio.run(get_tool(create_app(settings), "claude_status")())
     assert status["claude_version"] == "2.1.236"
     assert status["logged_in"] is True
@@ -690,11 +694,16 @@ def test_status_includes_official_quota_observation_without_leaking_identity(
 ):
     settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin)
+    monkeypatch.setattr(
+        server_module,
+        "run_usage_command",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret probe failure")),
+    )
     unavailable = asyncio.run(get_tool(create_app(settings), "claude_status")())
     assert unavailable["opus_quota"] == {
         "available": False,
-        "source": "claude_code_statusline",
-        "reason": "statusline_observation_unavailable",
+        "source": "claude_code_usage_command",
+        "reason": "usage_command_unavailable",
         "manual_check_url": "https://claude.ai/usage",
     }
 
@@ -763,6 +772,56 @@ def test_status_does_not_report_quota_for_missing_login(tmp_path, monkeypatch):
         "reason": "requires_claude_ai_login",
         "manual_check_url": "https://claude.ai/usage",
     }
+
+
+def test_status_uses_official_usage_fallback_and_shared_cache(
+    tmp_path, monkeypatch
+):
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin)
+    state = settings.work_root / "state"
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state.chmod(0o700)
+    now = datetime.now(timezone.utc)
+    five_reset = now + timedelta(hours=2)
+    seven_reset = now + timedelta(days=2)
+    months = (
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    )
+
+    def clock(value):
+        return value.strftime("%I:%M%p").lstrip("0").lower()
+
+    screen = (
+        "Current session 60% used Resets "
+        f"{clock(five_reset)} (UTC) "
+        "Current week (all models) 12% used Resets "
+        f"{months[seven_reset.month - 1]} {seven_reset.day}, "
+        f"{clock(seven_reset)} (UTC) secret@example.com"
+    )
+    calls = 0
+
+    async def official_usage(_claude_bin, *, cwd):
+        nonlocal calls
+        calls += 1
+        assert cwd == settings.principal_work_dir
+        return screen
+
+    monkeypatch.setattr(server_module, "run_usage_command", official_usage)
+    status_tool = get_tool(create_app(settings), "claude_status")
+
+    first = asyncio.run(status_tool())
+    second = asyncio.run(status_tool())
+
+    assert calls == 1
+    assert first["opus_quota"]["source"] == "claude_code_usage_command"
+    assert first["opus_quota"]["five_hour"]["used_percent"] == 60.0
+    assert first["opus_quota"]["seven_day"]["used_percent"] == 12.0
+    assert second["opus_quota"]["age_seconds"] >= 0
+    assert "secret@example.com" not in json.dumps(first)
+    cache = state / "usage-command-observation.json"
+    assert "secret@example.com" not in cache.read_text(encoding="ascii")
 
 
 def test_model_family_absence_is_rejected_not_silently_ignored():
@@ -1044,6 +1103,10 @@ def test_request_ids_match_audit_for_all_seven_tools_and_rejections(
 ):
     claude_home = tmp_path / "claude-home"
     monkeypatch.setattr(server_module, "_claude_home", lambda: claude_home)
+    async def unavailable_probe(_settings):
+        return server_module.usage_command_unavailable()
+
+    monkeypatch.setattr(server_module, "_run_usage_probe", unavailable_probe)
     settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin)
     app = create_app(settings)
