@@ -5,11 +5,11 @@ description: Use the configured remote Gemini bridge backed by Antigravity CLI f
 
 # Gemini Research
 
-Use the `gemini_research` MCP tools. During first-time setup, if this Codex
-process has not loaded the newly installed tools, use the bundled
-`scripts/call_tool.py` client described below. It calls the same restricted
-MCP endpoint and validates the installed configuration. Do not replace the
-bridge with unrestricted SSH, arbitrary remote commands, or a local Gemini login.
+Use the `gemini_research` MCP tools. If those tools are unavailable, check
+whether the installer registered the MCP entry and wait for the host tool
+catalog to refresh; a missing entry in the current process does not by itself
+mean installation failed. Do not replace the bridge with unrestricted SSH,
+arbitrary remote commands, a local Gemini login, or another helper client.
 
 ## First-time client setup
 
@@ -43,44 +43,37 @@ When the user asks to install or configure this bridge:
    authorize that public key before `--verify` can succeed.
 7. Report whether setup used `pre-authorized` or `generated fallback`, and
    report only the sanitized status returned by the MCP handshake.
-8. Configuration changes do not alter this process's tool catalog. For use
-   in the installation conversation, read this installed skill and use
-   `scripts/call_tool.py`. Restart Codex later for native tool discovery.
+8. Registration may precede the host's tool-catalog refresh. If registration
+   and verification succeeded but native tools are still absent,
+   wait for the host catalog refresh instead of reinstalling or substituting a
+   command-line client. Ask the user to refresh or restart Codex only when the
+   host provides no other way to load the registered tools.
 
 The setup script is fail-closed. It does not overwrite an existing key,
 different host pin, or conflicting `gemini_research` MCP entry.
+For an already-authorized partner upgrade, install the new Skill into a fresh
+staging directory first: the Skill installer refuses an existing destination.
+Back up the old Skill outside the skills directory and replace it with the
+validated new copy, rather than overlaying it. Then rerun setup with
+`--principal partner --verify` and no
+`--import-key`. The existing dedicated key and registered MCP entry are reused;
+do not delete, repackage, print, or read that private key during the upgrade.
+If Codex home is reached through a symlink, resolve it to its real directory
+first and pass that path explicitly with `--codex-home`; setup intentionally
+rejects a symlinked Codex home rather than weakening its safety checks.
 
-## Use in the installation conversation
+The obsolete helper path is exactly `scripts/call_tool.py` within this
+installed Skill directory. Remove only that known path if it remains after
+an overlay update; do not broadly delete files or directories in the user
+environment.
 
-The bundled client requires the `gemini_research` entry already written by
-the installer. It accepts no alternate endpoint, remote command, or CLI.
-It checks the dedicated key and host pin, initializes MCP, verifies exactly
-the seven tools, and returns the tool's structured JSON result. All real
-Gemini work still runs on the VPS.
-
-From the installed skill directory:
-
-```sh
-python3 scripts/call_tool.py --tool gemini_status
-```
-
-Stop if remote availability or model selection is blocked. After a successful
-setup verification, make one small acceptance request without web research.
-Write a JSON file containing `{"model":"pro","use_web":false,"timeout_seconds":120}`;
-pass its absolute path as `--arguments-file`, and pass a short prompt using
-`--prompt-stdin`:
-
-```sh
-python3 scripts/call_tool.py --tool gemini_once \
-  --arguments-file <acceptance-arguments.json> --prompt-stdin
-```
-
-This is also the same-conversation route for the user's subsequent question.
-For other tools, supply their published MCP arguments through
-`--arguments-file`; a continuation needs the opaque bridge `conversation_id`
-and its follow-up prompt. `--codex-home` supports an explicitly chosen client
-directory. The helper never changes provider or principal and returns a
-nonzero exit code on failure; do not interpret that as successful acceptance.
+After successful setup verification, make one small acceptance request through
+the native `gemini_once` MCP tool. Pass `model="pro"`,
+`use_web=false`, and `timeout_seconds=120`, with the prompt
+`只回复 GEMINI_PRO_ACCEPTANCE_OK。` Check the actual response before reporting
+installation as accepted. If the host has not loaded the newly registered
+tools yet, wait for that refresh; setup's read-only `gemini_status`
+handshake is not a substitute for this native inference acceptance call.
 
 ## Choose the interaction
 

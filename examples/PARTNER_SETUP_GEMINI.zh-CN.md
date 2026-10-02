@@ -20,14 +20,42 @@ https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-re
 将下面这段话与 `gemini-partner-access.zip` 一起交给 partner 的 Codex：
 
 ```text
-请使用 $skill-installer 从 https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-research 安装 gemini-research Skill，并阅读其中的 SKILL.md；不要等待或索取 Skill ZIP。安全解压随附的 gemini-partner-access.zip，将交付私钥文件权限设为 600，不查看、展示或上传私钥内容。在安装后的 Skill 目录运行 python3 scripts/setup_client.py --principal partner --import-key <交付私钥绝对路径> --verify。要求脚本报告 `pre-authorized import`、恰好七个 gemini 工具、principal=partner、availability.eligible=true、default_model=pro、model_selection_ready=true，并确认策略为 `gemini-3.1-pro-high` / `high`；空 usage metadata 不能证明当前调用的实际计费模型。随后做一次小的离线 Gemini Pro 调用，问题为“只回复 GEMINI_PRO_ACCEPTANCE_OK。”；本会话若尚未加载 MCP 工具，就用 scripts/call_tool.py 调用同一个受限 MCP：--tool gemini_once --arguments-file <包含 model=pro、use_web=false、timeout_seconds=120 的 JSON 文件绝对路径> --prompt-stdin，并通过 stdin 输入问题。核对实际回答并报告安装与真实调用结果；以后直接按 gemini-research 提问即可。需要 Python 3.11+ 和 OpenSSH，无需本地 Google 登录、Gemini/Antigravity CLI 或 API key。遇到密钥、host pin、配置冲突或远端不可用时停止并报告固定错误，不覆盖或换模型；验证成功后删除交付私钥副本及 access ZIP，保留已安装的专用密钥。
+请使用 $skill-installer 从 https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-research 安装 gemini-research Skill，并阅读其中的 SKILL.md；不要等待或索取 Skill ZIP。安全解压随附的 gemini-partner-access.zip，将交付私钥文件权限设为 600，不查看、展示或上传私钥内容。在安装后的 Skill 目录运行 python3 scripts/setup_client.py --principal partner --import-key <交付私钥绝对路径> --verify。要求脚本报告 `pre-authorized import`、恰好七个 gemini 工具、principal=partner、availability.eligible=true、default_model=pro、model_selection_ready=true，并确认策略为 `gemini-3.1-pro-high` / `high`；空 usage metadata 不能证明当前调用的实际计费模型。随后通过宿主原生 `gemini_once` MCP 工具做一次小的离线 Gemini Pro 调用，参数为 model=pro、use_web=false、timeout_seconds=120，问题为“只回复 GEMINI_PRO_ACCEPTANCE_OK。”；若本会话尚未加载新注册的 MCP 工具，先确认注册与握手成功，再等待宿主工具目录刷新，不要重装或改用脚本/SSH 替代。核对实际回答并报告安装与真实调用结果；以后直接按 gemini-research 提问即可。需要 Python 3.11+ 和 OpenSSH，无需本地 Google 登录、Gemini/Antigravity CLI 或 API key。遇到密钥、host pin、配置冲突或远端不可用时停止并报告固定错误，不覆盖或换模型；验证成功后删除交付私钥副本及 access ZIP，保留已安装的专用密钥。
 ```
 
-本对话可以直接使用打包的 `scripts/call_tool.py`，它只接受安装器写入的完整配置、
-固定 endpoint、专用密钥和 host pin；握手后核验七个工具，再转发一次 MCP 调用。
-重新启动 Codex 后，优先用原生 `gemini_research` MCP 工具。
-helper 支持 `--codex-home`；它不接受 `--principal`，身份由专用 key 决定。
-续聊、导出等参数通过 `--arguments-file` 传递，只使用 bridge 的 opaque conversation_id。
+`setup_client.py` 只负责导入专用密钥、注册受限 MCP、pin 主机密钥，并在
+`--verify` 时做只读 `gemini_status` 握手；它不提供推理调用入口。握手和状态
+通过不代表第一次真实推理已被接受。安装后的所有提问、续聊、导出等操作都通过
+宿主原生 `gemini_research` MCP 工具，并只使用 bridge 的 opaque conversation_id。
+
+## 已授权 partner 的 Skill 升级
+
+已经完成首次安装的 partner 不需要新的 access ZIP，也不应重打包、删除、输出
+或读取既有专用私钥。让 Codex 用 `$skill-installer` 从 main 分支安装到新的
+暂存目录（`--dest`），确认内容后将旧 Skill 备份到 skills 目录之外，再用新
+目录替换旧目录。安装器不支持覆盖已有目标；直接叠加文件还可能留下旧版
+`scripts/call_tool.py`。若此前覆盖安装已经遗留该文件，只清理这个精确路径，
+不要泛化删除用户目录。随后先解析自己的 Codex home 真实目录（例如
+`realpath "${CODEX_HOME:-$HOME/.codex}"`），再在更新后的 Skill 目录运行：
+
+```sh
+python3 scripts/setup_client.py --principal partner \
+  --codex-home <解析后的codex-home绝对路径> --verify
+```
+
+该命令应识别已就位的专用密钥并复用现有 MCP 注册；除报告冲突外不得改写。
+等待宿主加载更新后的七工具目录后，用原生 `gemini_status` 确认
+`principal=partner`、`availability.eligible=true`、`default_model=pro`、
+`model_selection_ready=true`，再用原生 `gemini_once` 传入
+`model="pro"`、`use_web=false`、`timeout_seconds=120` 和提示
+`只回复 GEMINI_PRO_ACCEPTANCE_OK。`，核对实际回答。
+
+可直接交给已授权 partner 的 Codex 的升级指令如下；其中不包含也不需要新的
+密钥包，私钥保持原位且不可读取或重新打包：
+
+```text
+请从 https://github.com/rapidhere121345/codex2calude-skill 的 main 分支安装或更新 skills/gemini-research，先阅读该 Skill 和 examples/PARTNER_SETUP_GEMINI.zh-CN.md。用 $skill-installer 下载到新的暂存目录；若已安装，先将旧 Skill 备份到 skills 目录之外，再用新目录替换，确认没有遗留 scripts/call_tool.py。复用本机已安装的 Gemini partner 专用密钥；如果只有此前收到的本地密钥文件，按 SKILL.md 导入即可，不要生成新密钥或索取新密钥包，不展示、上传或重新打包私钥。解析真实 CODEX_HOME，在安装后的 Skill 目录运行 python3 scripts/setup_client.py --principal partner --codex-home <真实目录> --verify；仅在尚未安装专用密钥时加 --import-key <此前收到的本地文件>。确认宿主加载七个 gemini_research 工具，用原生 gemini_status 检查 principal=partner、availability.eligible=true、default_model=pro、model_selection_ready=true；再用原生 gemini_once（model="pro"、use_web=false、timeout_seconds=120）要求“只回复 GEMINI_PRO_ACCEPTANCE_OK。”，实际收到该回答才算完成。工具暂未加载时等待刷新，必要时说明如何重新加载；不要改用脚本或 SSH 推理。缺少既有密钥、仓库权限或遇到配置冲突时报告具体缺项，保留现有配置。
+```
 
 GitHub 安装要求 partner 已拥有私有仓库 Read 权限。若主线 GitHub 安装暂不可用，
 Owner 可另行安排私下传输 Skill 目录作为非标准备用引导；这不改变 canonical

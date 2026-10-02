@@ -46,9 +46,22 @@ The canonical partner flow fetches the Skill there and does not require a Skill
 ZIP; the owner sends only the dedicated private partner-access ZIP separately
 through a controlled channel. The handoff is in
 [`examples/PARTNER_SETUP_GEMINI.zh-CN.md`](examples/PARTNER_SETUP_GEMINI.zh-CN.md).
-The installed Skill includes `scripts/call_tool.py`, a restricted client for
-this same MCP endpoint. It lets Codex verify and use the bridge in the
-installation conversation before its native tool catalog is reloaded.
+The installed Skill uses `scripts/setup_client.py` for key import,
+MCP registration, and a read-only `gemini_status` handshake. All research and
+acceptance inference go through the host-loaded `gemini_research` MCP tools; if
+that catalog has not refreshed yet, wait for the host rather than using a
+bundled command-line client.
+Updating an already authorized partner reuses that partner's installed
+MCP-dedicated key and existing MCP registration. The Skill installer refuses
+an existing destination: download into a fresh staging directory, then back up
+the installed Skill outside the skills directory and replace it with the
+validated new copy. Do not overlay the old directory, which could retain the
+obsolete `scripts/call_tool.py`. Resolve the partner's `CODEX_HOME` to a real directory when
+it is a symlink, then run `python3 scripts/setup_client.py --principal partner
+--codex-home <resolved-codex-home> --verify` from the updated Skill. Do not
+import, delete, repackage, print, or read the existing private key. Finally
+wait for the host tool refresh and use native `gemini_status` and
+`gemini_once` for acceptance.
 The production paths are:
 
 ```text
