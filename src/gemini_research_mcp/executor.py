@@ -93,8 +93,6 @@ _MAX_ERROR_TEXT_CHARS = 2_048
 _MAX_ERROR_ITEMS = 16
 _GENERIC_CATEGORY = "runtime"
 _MAX_INIT_LINE_BYTES = 65_536
-_ALLOWED_WEB_RESEARCH_TOOLS = frozenset(("search_web", "read_url_content", "ask_permission"))
-_ALLOWED_OFFLINE_RESEARCH_TOOLS = frozenset(("ask_permission",))
 _REQUIRED_WEB_RESEARCH_TOOLS = frozenset(("search_web", "read_url_content"))
 _CONTROLLED_STDIN_COMMANDS = frozenset((("--version",), ("auth", "status")))
 
@@ -504,9 +502,6 @@ class _StreamInitValidator:
     """Fail-closed parser for the pre-prompt initialization NDJSON frame."""
 
     def __init__(self, use_web: bool):
-        self.allowed_tools = (
-            _ALLOWED_WEB_RESEARCH_TOOLS if use_web else _ALLOWED_OFFLINE_RESEARCH_TOOLS
-        )
         self.required_tools = _REQUIRED_WEB_RESEARCH_TOOLS if use_web else frozenset()
         self.ready = False
         self.failed = False
@@ -560,9 +555,7 @@ class _StreamInitValidator:
         if not is_init:
             return False
         tools = _tool_names(raw_tools)
-        if tools is None or not tools <= self.allowed_tools:
-            return False
-        if not self.required_tools <= tools:
+        if tools is None or not self.required_tools <= tools:
             return False
         self.ready = True
         if self.event is not None:
@@ -583,7 +576,7 @@ async def _wait_for_stream_init(
         task.cancel()
     await asyncio.gather(*pending, return_exceptions=True)
     if validator.failed:
-        raise ExecutionError("Gemini CLI advertised unexpected research tools")
+        raise ExecutionError("Gemini CLI sent an invalid tool initialization event")
     if validator.ready:
         return
     raise ExecutionError("Gemini CLI did not send its tool initialization event")

@@ -116,6 +116,15 @@ def fake_clis(
                             )
                             == "1",
                         },
+                        "availability": {
+                            "status": os.environ.get(
+                                "GEMINI_FAKE_AVAILABILITY", "eligible"
+                            ),
+                            "eligible": os.environ.get(
+                                "GEMINI_FAKE_ELIGIBLE", "1"
+                            )
+                            == "1",
+                        },
                         "models": json.loads(
                             os.environ.get(
                                 "GEMINI_FAKE_MODELS",
@@ -390,6 +399,20 @@ def test_client_inventory_is_exactly_seven_gemini_tools() -> None:
         {"GEMINI_FAKE_STATUS_ERROR": "1"},
         {"GEMINI_FAKE_AUTH_CONFIGURED": "0"},
         {"GEMINI_FAKE_LOGGED_IN": "0"},
+        {
+            "GEMINI_FAKE_AVAILABILITY": "unsupported_location",
+            "GEMINI_FAKE_ELIGIBLE": "0",
+        },
+        {
+            "GEMINI_FAKE_AVAILABILITY": "account_ineligible",
+            "GEMINI_FAKE_ELIGIBLE": "0",
+        },
+        {
+            "GEMINI_FAKE_AVAILABILITY": "authentication_required",
+            "GEMINI_FAKE_ELIGIBLE": "0",
+        },
+        {"GEMINI_FAKE_AVAILABILITY": "unknown", "GEMINI_FAKE_ELIGIBLE": "0"},
+        {"GEMINI_FAKE_AVAILABILITY": "eligible", "GEMINI_FAKE_ELIGIBLE": "0"},
     ],
 )
 def test_verify_fails_closed_for_invalid_mcp_state(
@@ -407,6 +430,27 @@ def test_verify_fails_closed_for_invalid_mcp_state(
     assert run_import(workspace, "--verify") == 1
     output = capsys.readouterr()
     assert PRIVATE_KEY not in (output.out + output.err).encode()
+
+
+def test_verify_reports_official_location_eligibility_before_reauth(
+    fake_clis: tuple[Path, Path, Path, Path],
+    workspace: tuple[Path, Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    install_workspace(workspace)
+    preinstall_gemini_config(workspace)
+    monkeypatch.setenv("GEMINI_FAKE_AVAILABILITY", "unsupported_location")
+    monkeypatch.setenv("GEMINI_FAKE_ELIGIBLE", "0")
+
+    assert run_import(workspace, "--verify") == 1
+
+    output = capsys.readouterr()
+    assert "unsupported_location" in output.err
+    assert "官方 FAQ" in output.err
+    assert "重新 OAuth" in output.err
+    assert "远端 Antigravity CLI 认证未配置" not in output.err
+    assert "远端 Antigravity CLI 未登录" not in output.err
 
 
 def configure_explicit_pro_status(

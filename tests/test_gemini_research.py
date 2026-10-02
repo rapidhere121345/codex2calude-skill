@@ -333,10 +333,113 @@ def test_status_usage_true_false_and_version(tmp_path: Path, authenticated: bool
     assert status["cli_compatible"] is True
     assert status["models"]["auto"]["cli_supported"] is True
     assert status["auth"]["logged_in"] is authenticated
+    assert status["availability"] == {
+        "status": "eligible" if authenticated else "authentication_required",
+        "eligible": authenticated,
+    }
     assert status["quota"]["available"] is False
     serialized = json.dumps(status)
     assert "secret-account" not in serialized
     assert "private-native-id" not in serialized
+
+
+def test_status_classifies_official_availability_without_raw_leak(
+    tmp_path: Path,
+) -> None:
+    binary = _fake_agy(tmp_path / "agy", authenticated=True)
+    official_error = json.dumps(
+        {
+            "conversation_id": "",
+            "status": "ERROR",
+            "response": "",
+            "error": (
+                "Eligibility check failed: Your current account is not eligible "
+                "for Antigravity, because it is not currently available in your "
+                "location."
+            ),
+            "duration_seconds": 0,
+            "num_turns": 0,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        }
+    )
+    script = binary.read_text(encoding="utf-8")
+    usage_guard = (
+        f"official_error = {official_error!r}\n"
+        'if "/usage" in sys.argv:\n'
+        "    print(official_error)\n"
+        "    raise SystemExit(1)\n"
+    )
+    marker = 'if "/usage" in sys.argv:'
+    assert marker in script
+    script = script.replace(marker, usage_guard + marker, 1)
+    binary.write_text(script, encoding="utf-8")
+    app = create_app(_settings(binary))
+
+    status = asyncio.run(get_tool(app, "gemini_status")())
+
+    assert status["auth"] == {
+        "configured": True,
+        "logged_in": True,
+        "method": "oauth",
+    }
+    assert status["availability"] == {
+        "status": "unsupported_location",
+        "eligible": False,
+    }
+    serialized = json.dumps(status)
+    assert "Eligibility check failed" not in serialized
+    assert "secret-account" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (
+            json.dumps(
+                {"status": "ERROR", "error": "secret-account is not authenticated"}
+            ),
+            "authentication_required",
+        ),
+        ("{not-json", "unknown"),
+        ("{}", "unknown"),
+        ('{"usage": {}}', "unknown"),
+        ("", "unknown"),
+    ],
+)
+def test_usage_diagnostic_is_conservative_for_auth_and_malformed(
+    stdout: str, expected: str
+) -> None:
+    logged_in, method, availability = server_module._usage_diagnostic(stdout)
+
+    assert logged_in is False
+    assert availability == expected
+    assert method == (
+        "authentication" if expected == "authentication_required" else None
+    )
+
+
+def test_status_timeout_does_not_report_availability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = _fake_agy(tmp_path / "agy", authenticated=True)
+
+    async def fake_run(settings, command, **kwargs):
+        from gemini_research_mcp.executor import CommandTimeoutError, ExecutionResult
+
+        if "/usage" in command:
+            raise CommandTimeoutError("timed out")
+        return ExecutionResult("1.2.14", "", 0)
+
+    monkeypatch.setattr(server_module, "_run", fake_run)
+    app = create_app(_settings(binary))
+    status = asyncio.run(get_tool(app, "gemini_status")())
+
+    assert status["auth"] == {
+        "configured": False,
+        "logged_in": False,
+        "method": "unknown",
+    }
+    assert status["availability"] == {"status": "unknown", "eligible": False}
 
 
 def test_five_tools_start_continue_export_close_and_isolation(tmp_path: Path) -> None:

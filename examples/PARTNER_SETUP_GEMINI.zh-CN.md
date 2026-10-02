@@ -1,46 +1,54 @@
 # Gemini Research partner 安装
 
-这套接入与 Claude Research 使用同一代码库，但 Antigravity CLI（`agy`）bridge 在 VPS 上独立
-部署、独立服务账号、独立 SSH principal 和独立密钥。不要复用 Claude 的密钥，也不要
-把私钥提交到仓库。
+与 Claude Research 共用代码库；VPS 上分别部署，客户端都使用 MCP + Skill。
+公网传输复用 TCP 22022，partner 私钥仅授权受限 MCP forced command。
+Google OAuth、Antigravity CLI 和所有真实推理均留在 VPS。
+Google credentials、tokens、keys 不交付给 partner，无需本地 provider 登录。
 
-把以下内容和 owner 预授权的 partner 私钥通过一对一私密渠道交给 partner。仓库
-通过仓库安装时，需要先授予 partner Read 权限：
+2026-10-02 自测验收已完成：官方 `agy` 1.2.14 个人 OAuth 已 eligible，Owner 和
+干净环境中实际安装的 partner 客户端均通过真实 MCP 调用、续聊、列表、导出、关闭
+及跨 principal 拒绝检查；VPS 命令、文件写入和官方网页读取通过。模型快照固定
+`gemini-3.1-pro-high` / `high`，公网仍复用 22022。附件可由 Owner 私下交付。
+
+Owner 先完成远端真实调用和续聊验收，再通过一对一渠道交付
+`gemini-partner-skill.zip` 与这位 partner 专用的 `gemini-partner-access.zip`。
+Skill 包可单独复用，access 包是私密凭据，不进入代码库。
+仅 OAuth 或模型目录可读不代表可用：地区资格、模型绑定和真实推理必须分别通过。
+
+将下面这段话与两个附件一起交给 partner 的 Codex：
 
 ```text
-请使用 $skill-installer 从
-https://github.com/rapidhere121345/codex2calude-skill/tree/gemini-antigravity/skills/gemini-research
-安装 gemini-research Skill。不要读取、展示、上传或转发我附带的私钥内容。
-安装后在 Skill 目录运行：
-
-python3 scripts/setup_client.py --principal partner \
-  --import-key <我附带的私钥绝对路径> --verify
-
-脚本必须显示 pre-authorized import，并验证恰好七个 gemini 工具。
-验证成功后，用系统安全删除机制删除交付私钥和压缩包，并提醒我重启 Codex。
-遇到已有密钥、host pin 或 gemini_research 配置冲突时停止，不要覆盖或绕过校验。
+请用这两个附件安装并验收 gemini-research：安全解压 gemini-partner-skill.zip，将其中 gemini-research 复制到 $CODEX_HOME/skills/（未设置时用 ~/.codex/skills/），读安装后的 SKILL.md；解压 gemini-partner-access.zip，将交付私钥权限设为 600，不查看、展示或上传私钥内容。在安装后的 Skill 目录运行 python3 scripts/setup_client.py --principal partner --import-key <交付私钥绝对路径> --verify。要求预授权导入、恰好七个 gemini 工具、principal=partner、availability.eligible=true、default_model=pro、model_selection_ready=true。随后做一次小的离线 Gemini Pro 调用，问题为“只回复 GEMINI_PRO_ACCEPTANCE_OK。”；本会话若尚未加载 MCP 工具，就用 scripts/call_tool.py 调用同一个受限 MCP：--tool gemini_once --arguments-file <包含 model=pro、use_web=false、timeout_seconds=120 的 JSON 文件绝对路径> --prompt-stdin，并通过 stdin 输入问题。核对实际回答，报告安装与真实调用结果；以后直接按 gemini-research 提问即可。需要 Python 3.11+ 和 OpenSSH，无需本地 Google 登录、Gemini/Antigravity CLI 或 API key。遇到密钥、host pin、配置冲突或远端不可用时停止并报告固定错误，不覆盖或换模型；验证成功后删除交付私钥副本及 access 包，保留已安装的专用密钥。
 ```
 
-如果 partner 没有 `$skill-installer`，可以只复制
-`skills/gemini-research` 目录到 `$CODEX_HOME/skills/gemini-research`。没有预授权
-私钥时，脚本只能生成 `.pub` 并停止等待 owner 授权。
+本对话可以直接使用打包的 `scripts/call_tool.py`，它只接受安装器写入的完整配置、
+固定 endpoint、专用密钥和 host pin；握手后核验七个工具，再转发一次 MCP 调用。
+重新启动 Codex 后，优先用原生 `gemini_research` MCP 工具。
+helper 支持 `--codex-home`；它不接受 `--principal`，身份由专用 key 决定。
+续聊、导出等参数通过 `--arguments-file` 传递，只使用 bridge 的 opaque conversation_id。
 
-底层已改为官方 Antigravity CLI，命令仍叫 `gemini-research`，MCP 仍是
-`gemini_*` 七个工具。真实登录和推理都在 VPS 使用 owner 的 Google OAuth
-套餐；partner 只需 MCP 专用密钥，无需 Google 密码、OAuth 文件或 API key。
-owner/partner 对话记录隔离，共享账号套餐额度，服务端并发为 1。
-两人统一固定 Gemini Pro 的最高可用推理档，模型参数使用 `pro`。
-Owner 必须在远端认证后核实具体模型 ID 和支持的最高档，再绑定服务端策略；
-`gemini_status.model_selection_ready=false` 时停止，不能用 `auto`、Flash 或
-其他模型代替。会话续聊保持创建时的具体模型与档位。额度耗尽直接报告；
-Owner 应确认 AI Credit Overages 为 `Never`，仅 OAuth 登录不代表不会消耗超额 credits。
+如果使用仓库安装，需要 partner 已拥有私有仓库 Read 权限：
+https://github.com/rapidhere121345/codex2calude-skill/tree/gemini-antigravity/skills/gemini-research
+离线附件不依赖 GitHub 访问权限。
 
-如果 owner 交付的是离线包，解压后将其中的 `gemini-research` 目录复制到
-`$CODEX_HOME/skills/gemini-research`（未设置时为 `~/.codex/skills/gemini-research`），
-然后运行同一个安装命令，`--import-key` 指向独立交付的私钥。
-离线 Skill 包不包含私钥；不要将私钥上传 Git 或发到群聊。
+MCP 会话映射与查询按 principal 过滤；Owner 与 partner 共享套餐额度和一个服务端并发槽。
+可信 Owner/partner 可以让 Gemini 为明确任务使用远端文件、命令等普通工具。
+Bridge 只校验 CLI init 格式及必要 web 能力，不检查工具目录 subset；实际工具
+执行由 VPS 独立配置 `always-proceed` 授权，不再设普通工具执行白名单。
+`use_web=true` 选择 web 研究模式，`false` 请求不做 web 研究，不能当作 web/file/shell
+的强技术隔离。初始工具目录不证明有效权限或工具上下文裁剪。
+两者使用同一 VPS 服务账户，开放 file/shell 后不具有文件系统强隔离；SSH key 本身
+仍只进入七工具 MCP forced command。禁止 `agy` 派生其他 AI 代理/任务，或通过命令
+切换 AI CLI/模型绕过固定 Pro；协作由外层 Codex native subagents 处理。
 
-验收要求：公网 TCP 22022 可达、恰好七个 MCP 工具、`principal=partner`、
-远端 `logged_in=true`、`default_model=pro` 和 `model_selection_ready=true`。
-仅 Skill 安装成功不表示账号认证和模型绑定已完成。公网接入复用已开放的 22022 SSH listener，按 geminimcp 用户路由到独立部署。
-遇到连接超时请报告给 owner，不要改用无校验 SSH。
+生产只允许逻辑模型 `pro`，具体模型和 effort 由 Owner 在 VPS 核对并绑定。
+当前账号目录的最高 Pro 选择为 Gemini 3.1 Pro (High)，CLI ID 为
+`gemini-3.1-pro-high`，使用 `--effort high`，Pro 选择器仅提供 Low 与 High。目录和固定参数并不能证明
+账号已获服务资格，真实调用结果才是最后验收。
+会话续聊保持创建时的具体模型与 effort 快照。
+
+`availability.status=unsupported_location` 时，由 Owner 检查 Google 条款页的账号
+关联国家及官方 FAQ；partner 安装器不会把它当成需要再次登录。
+`useG1Credits=false` 已由部署设置且为默认值；账号 AI Credit Overages 为 `Never`
+尚未确认，不能宣称用量仅限套餐基础额度。资格或额度错误直接停止，不自动改用 Flash、
+其他供应商、API-key 或 Vertex 计费。

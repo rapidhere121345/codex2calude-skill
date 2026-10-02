@@ -746,6 +746,50 @@ def status_summary(
     return lines
 
 
+def check_availability_status(status: Mapping[str, Any]) -> str:
+    availability = status.get("availability")
+    if not isinstance(availability, dict):
+        raise VerifyError("gemini_status 未返回有效可用性诊断")
+    value = availability.get("status")
+    if not isinstance(value, str):
+        raise VerifyError("gemini_status 未返回有效可用性诊断")
+    if value == "eligible":
+        if availability.get("eligible") is not True:
+            raise VerifyError("gemini_status 可用性诊断不一致")
+        return value
+    if value in {
+        "unsupported_location",
+        "account_ineligible",
+        "authentication_required",
+        "unknown",
+    } and availability.get("eligible") is False:
+        return value
+    raise VerifyError("gemini_status 未返回有效可用性诊断")
+
+
+def availability_error(value: str) -> VerifyError | None:
+    if value == "unsupported_location":
+        return VerifyError(
+            "远端 Antigravity 账户当前地域不可用（unsupported_location）。"
+            "请 Owner 参考 Antigravity 官方 FAQ 检查账户地区可用性和资格；"
+            "重新 OAuth、更换模型或修改安装配置不能绕过官方限制。"
+        )
+    if value == "account_ineligible":
+        return VerifyError(
+            "远端 Antigravity 账户暂不符合官方使用资格（account_ineligible）。"
+            "请 Owner 参考 Antigravity 官方 FAQ 检查账户资格；"
+            "重新 OAuth、更换模型或修改安装配置不能绕过官方限制。"
+        )
+    if value == "authentication_required":
+        return VerifyError(
+            "远端 Antigravity 认证不可用（authentication_required）；"
+            "请 Owner 完成官方 OAuth 后重试"
+        )
+    if value == "unknown":
+        return VerifyError("远端 Antigravity 可用性诊断未知，已拒绝完成验证")
+    return None
+
+
 def check_responses(stdout: str, principal: str) -> list[str]:
     responses = parse_responses(stdout)
     for request_id, label in ((1, "initialize"), (2, "tools/list"), (3, "gemini_status")):
@@ -777,6 +821,10 @@ def check_responses(stdout: str, principal: str) -> list[str]:
         raise VerifyError("gemini_status 返回的 principal 与请求不一致")
     if status.get("status") != "ok":
         raise VerifyError("gemini_status 返回状态异常")
+    availability = check_availability_status(status)
+    availability_failure = availability_error(availability)
+    if availability_failure is not None:
+        raise availability_failure
     auth = status.get("auth")
     if not isinstance(auth, dict):
         raise VerifyError("gemini_status 未返回有效认证状态")

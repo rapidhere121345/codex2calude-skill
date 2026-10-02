@@ -207,6 +207,69 @@ def test_prompt_travels_by_stdin_not_argv(tmp_path: Path) -> None:
     assert invocation["argv"] == command
 
 
+def test_full_global_tool_catalog_is_accepted_and_receives_prompt(
+    tmp_path: Path,
+) -> None:
+    tools = [
+        "search_web",
+        "read_url_content",
+        "run_command",
+        "browser",
+        "invoke_subagent",
+        *(f"global_tool_{index}" for index in range(53)),
+    ]
+    assert len(tools) == 58
+    binary = _write_executable(
+        tmp_path / "agy-global-tools",
+        """
+        #!/usr/bin/env python3
+        import json
+        import sys
+        from pathlib import Path
+        print(
+            json.dumps(
+                {
+                    "event": "init",
+                    "conversation_id": "01234567-89ab-cdef-0123-456789abcdef",
+                    "init": {"tools": __TOOLS__},
+                }
+            ),
+            flush=True,
+        )
+        first_line = sys.stdin.readline()
+        if not first_line:
+            raise SystemExit(2)
+        Path(__file__).with_name("stdin.json").write_text(first_line)
+        print(json.dumps({"result": "global tools", "session_id": None}))
+        """,
+    )
+    command = build_ask_command(
+        _settings(binary),
+        resume_session_id=None,
+        model_cli_value="auto",
+        use_web=True,
+        max_turns=20,
+    )
+    source = binary.read_text(encoding="utf-8").replace("__TOOLS__", repr(tools))
+    binary.write_text(source, encoding="utf-8")
+
+    result = asyncio.run(
+        run_command(
+            command,
+            cwd=tmp_path,
+            timeout_seconds=5,
+            output_limit=10_000,
+            prompt="global catalog prompt",
+        )
+    )
+
+    assert json.loads(result.stdout.splitlines()[-1])["result"] == "global tools"
+    assert json.loads((tmp_path / "stdin.json").read_text()) == {
+        "event": "user",
+        "message": {"content": "global catalog prompt"},
+    }
+
+
 def test_legacy_system_init_and_web_without_ask_permission(tmp_path: Path) -> None:
     binary = _write_executable(
         tmp_path / "agy-legacy",
@@ -290,7 +353,7 @@ def test_missing_init_tool_list_blocks_prompt(tmp_path: Path) -> None:
         max_turns=20,
     )
 
-    with pytest.raises(ExecutionError, match="unexpected research tools"):
+    with pytest.raises(ExecutionError, match="invalid tool initialization"):
         asyncio.run(
             run_command(
                 command,
@@ -422,7 +485,7 @@ def test_plain_stdin_is_retained_for_controlled_commands(tmp_path: Path) -> None
     assert (tmp_path / "stdin.txt").read_text() == "controlled stdin"
 
 
-def test_invalid_init_tool_allowlist_blocks_prompt(tmp_path: Path) -> None:
+def test_malformed_init_tool_item_blocks_prompt(tmp_path: Path) -> None:
     binary = _write_executable(
         tmp_path / "agy-invalid-init",
         """
@@ -436,7 +499,7 @@ def test_invalid_init_tool_allowlist_blocks_prompt(tmp_path: Path) -> None:
                 {
                     "event": "init",
                     "conversation_id": "01234567-89ab-cdef-0123-456789abcdef",
-                    "init": {"tools": ["ask_permission", "run_command"]},
+                    "init": {"tools": ["search_web", "read_url_content", 7]},
                 }
             ),
             flush=True,
@@ -455,7 +518,7 @@ def test_invalid_init_tool_allowlist_blocks_prompt(tmp_path: Path) -> None:
         max_turns=20,
     )
 
-    with pytest.raises(ExecutionError, match="unexpected research tools"):
+    with pytest.raises(ExecutionError, match="invalid tool initialization"):
         asyncio.run(
             run_command(
                 command,
@@ -469,7 +532,91 @@ def test_invalid_init_tool_allowlist_blocks_prompt(tmp_path: Path) -> None:
     assert not (tmp_path / "prompt-leak.txt").exists()
 
 
-def test_offline_init_accepts_only_ask_permission_and_sends_prompt(
+def test_web_init_missing_required_tool_blocks_prompt(tmp_path: Path) -> None:
+    binary = _write_executable(
+        tmp_path / "agy-missing-required-tool",
+        """
+        #!/usr/bin/env python3
+        import json
+        import sys
+        import time
+        from pathlib import Path
+        print(
+            json.dumps(
+                {
+                    "event": "init",
+                    "conversation_id": "01234567-89ab-cdef-0123-456789abcdef",
+                    "init": {"tools": ["search_web", "run_command"]},
+                }
+            ),
+            flush=True,
+        )
+        value = sys.stdin.readline()
+        if value:
+            Path(__file__).with_name("required-tool-leak.txt").write_text(value)
+        time.sleep(2)
+        """,
+    )
+    command = build_ask_command(
+        _settings(binary),
+        resume_session_id=None,
+        model_cli_value="auto",
+        use_web=True,
+        max_turns=20,
+    )
+
+    with pytest.raises(ExecutionError, match="invalid tool initialization"):
+        asyncio.run(
+            run_command(
+                command,
+                cwd=tmp_path,
+                timeout_seconds=5,
+                output_limit=10_000,
+                prompt="secret prompt",
+            )
+        )
+
+    assert not (tmp_path / "required-tool-leak.txt").exists()
+
+
+def test_invalid_init_event_blocks_prompt(tmp_path: Path) -> None:
+    binary = _write_executable(
+        tmp_path / "agy-invalid-init-event",
+        """
+        #!/usr/bin/env python3
+        import sys
+        import time
+        from pathlib import Path
+        print("{broken", flush=True)
+        value = sys.stdin.readline()
+        if value:
+            Path(__file__).with_name("invalid-init-leak.txt").write_text(value)
+        time.sleep(2)
+        """,
+    )
+    command = build_ask_command(
+        _settings(binary),
+        resume_session_id=None,
+        model_cli_value="auto",
+        use_web=True,
+        max_turns=20,
+    )
+
+    with pytest.raises(ExecutionError, match="invalid tool initialization"):
+        asyncio.run(
+            run_command(
+                command,
+                cwd=tmp_path,
+                timeout_seconds=5,
+                output_limit=10_000,
+                prompt="secret prompt",
+            )
+        )
+
+    assert not (tmp_path / "invalid-init-leak.txt").exists()
+
+
+def test_offline_init_accepts_empty_tool_catalog_and_sends_prompt(
     tmp_path: Path,
 ) -> None:
     binary = _write_executable(

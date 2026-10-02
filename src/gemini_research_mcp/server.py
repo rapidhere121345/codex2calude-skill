@@ -70,6 +70,28 @@ _STATUS_LABEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 _UNSAFE_TEXT_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _MAX_USAGE_JSON_CHARS = 16_384
 _MAX_USAGE_ACCOUNTS = 8
+_USAGE_LOCATION_RULES = (
+    "not currently available in your location",
+    "not available in your location",
+    "not currently available in your region",
+    "not available in your region",
+    "not currently available in your country",
+    "not available in your country",
+    "location is not supported",
+    "unsupported location",
+)
+_USAGE_AUTH_RULES = (
+    "not authenticated",
+    "authentication required",
+    "authentication error",
+    "login required",
+    "oauth token expired",
+)
+_USAGE_ELIGIBILITY_RULES = (
+    "account is not eligible",
+    "account is ineligible",
+    "you are not eligible",
+)
 _MAX_TRANSCRIPT_BYTES = 16_000_000
 _MAX_TRANSCRIPT_SCAN_FILES = 256
 _MAX_TRANSCRIPT_SCAN_BYTES = 32_000_000
@@ -526,47 +548,68 @@ def build_agy_usage_command(gemini_bin: Path) -> list[str]:
     return [str(gemini_bin), "-p", "/usage", "--output-format", "json"]
 
 
-def _usage_authenticated(
+def _usage_diagnostic(
     stdout: str, stderr: str = ""
-) -> tuple[bool, str | None]:
-    """Interpret /usage without exposing its account or quota payload."""
+) -> tuple[bool, str | None, str]:
+    """Interpret /usage without exposing its account or quota payload.
+
+    The third value is a fixed availability enum. Official error prose is used
+    only to select that enum and is never copied into tool responses.
+    """
 
     stripped = stdout.strip()
     if not stripped:
-        return False, None
+        return False, None, "unknown"
     try:
         if len(stripped) > _MAX_USAGE_JSON_CHARS:
-            return False, None
+            return False, None, "unknown"
         payload = json.loads(stripped)
     except (TypeError, ValueError, RecursionError):
-        return False, None
+        return False, None, "unknown"
     if not isinstance(payload, dict):
-        return False, None
+        return False, None, "unknown"
 
     error = payload.get("error")
+    status = payload.get("status")
+    if status == "ERROR":
+        message = error if isinstance(error, str) else None
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            message = error["message"]
+        if message is not None and message.strip():
+            normalized = " ".join(message.casefold().split())
+            if any(rule in normalized for rule in _USAGE_LOCATION_RULES):
+                return True, "oauth", "unsupported_location"
+            if any(rule in normalized for rule in _USAGE_AUTH_RULES):
+                return False, "authentication", "authentication_required"
+            if any(rule in normalized for rule in _USAGE_ELIGIBILITY_RULES):
+                return True, "oauth", "account_ineligible"
+        return False, None, "unknown"
+
     error_present = isinstance(error, str) and bool(error.strip())
     if isinstance(error, dict):
         error_present = error_present or _has_nonempty_string(error, "message")
-    status = payload.get("status")
     if error_present or status == "ERROR":
-        return False, "authentication"
+        return False, "authentication", "authentication_required"
     if status is not None and not isinstance(status, str):
-        return False, None
+        return False, None, "unknown"
     if status is not None and not _STATUS_LABEL_RE.fullmatch(status):
-        return False, None
+        return False, None, "unknown"
     if status is not None and status.upper() not in ("SUCCESS", "OK"):
-        return False, "authentication"
+        return False, "authentication", "authentication_required"
+    if status is None:
+        # A parseable object alone is not evidence that /usage succeeded.
+        return False, None, "unknown"
 
     command = payload.get("command")
     if isinstance(command, str):
         command_name = command.strip().casefold()
         if command_name and command_name not in ("/usage", "usage", "command usage"):
-            return False, None
+            return False, None, "unknown"
 
     embedded = payload.get("result")
     if isinstance(embedded, dict):
         if _has_nonempty_string(embedded, "error"):
-            return False, "authentication"
+            return False, "authentication", "authentication_required"
         embedded_status = embedded.get("status")
         if embedded_status is not None:
             if (
@@ -574,8 +617,8 @@ def _usage_authenticated(
                 or not _STATUS_LABEL_RE.fullmatch(embedded_status)
                 or embedded_status.upper() not in ("SUCCESS", "OK")
             ):
-                return False, "authentication"
-    return True, "authenticated"
+                return False, "authentication", "authentication_required"
+    return True, "authenticated", "eligible"
 
 
 def _result(
@@ -1014,6 +1057,7 @@ def create_app(settings: Settings) -> FastMCP:
 
             usage_logged_in = False
             usage_method: str | None = None
+            usage_availability = "unknown"
             try:
                 usage_raw = await _run(
                     settings,
@@ -1022,15 +1066,27 @@ def create_app(settings: Settings) -> FastMCP:
                     prompt="",
                 )
                 if usage_raw.exit_code == 0:
-                    usage_logged_in, usage_method = _usage_authenticated(
-                        usage_raw.stdout
-                    )
+                    (
+                        usage_logged_in,
+                        usage_method,
+                        usage_availability,
+                    ) = _usage_diagnostic(usage_raw.stdout)
+            except CommandTimeoutError:
+                # A timed-out diagnostic cannot establish availability. Keep
+                # the old fields false without guessing that this is OAuth.
+                usage_logged_in = False
+                usage_method = None
+                usage_availability = "unknown"
             except ExecutionError as exc:
-                # An unauthenticated /usage invocation may wait for OAuth and
-                # exit 1. Keep status usable and report only logged_in=false.
+                # A failed /usage invocation may contain a structured official
+                # error. Keep status usable and classify only allowlisted text.
                 raw = diagnostics.raw_error_data(exc)
                 if raw is not None:
-                    usage_logged_in, usage_method = _usage_authenticated(raw.stdout)
+                    (
+                        usage_logged_in,
+                        usage_method,
+                        usage_availability,
+                    ) = _usage_diagnostic(raw.stdout)
 
             model_status = {}
             for name, policy in settings.models.items():
@@ -1061,6 +1117,10 @@ def create_app(settings: Settings) -> FastMCP:
                     "configured": usage_logged_in,
                     "logged_in": usage_logged_in,
                     "method": _safe_status_label(usage_method),
+                },
+                "availability": {
+                    "status": _safe_status_label(usage_availability),
+                    "eligible": usage_availability == "eligible",
                 },
                 "models": model_status,
                 "default_model": settings.default_model,

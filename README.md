@@ -42,6 +42,9 @@ credentials. The deployment does not select API-key or Vertex billing.
 
 Install `skills/gemini-research`; the partner handoff is in
 [`examples/PARTNER_SETUP_GEMINI.zh-CN.md`](examples/PARTNER_SETUP_GEMINI.zh-CN.md).
+The private offline Skill package includes `scripts/call_tool.py`, a restricted
+client for this same MCP endpoint. It lets Codex verify and use the bridge in
+the installation conversation before its native tool catalog is reloaded.
 The production paths are:
 
 ```text
@@ -55,10 +58,17 @@ The production paths are:
 /etc/ssh/sshd_config.claude-mcp  # shared TCP 22022 listener
 ```
 
-`deploy/gemini-agents/` contains the two restricted agent definitions and the
-CLI permission settings. `use_web=true` permits `search_web` and
-`read_url_content`; offline calls use an empty tool list. File access, terminal
-commands, browser actuation, arbitrary MCP, and delegation are denied. Ordinary
+`deploy/gemini-agents/` contains the two task-mode definitions and independent
+VPS CLI permission settings. The bridge validates CLI init format and required
+web capabilities (`search_web` and `read_url_content` for `use_web=true`), not
+a tool-catalogue subset. CLI tool execution uses VPS `always-proceed` settings
+without an ordinary-tool allowlist. Trusted owner and partner may request
+remote files, commands, and other ordinary tools for explicit tasks.
+`use_web=false` requests no web research; it is not technical isolation from
+web, files, or shell. The initial catalogue proves neither effective tool
+permissions nor tool-context pruning. Do not let `agy` spawn or delegate other
+AI agents or tasks, or use commands to switch AI CLIs/models to bypass fixed
+Pro; collaboration remains with the outer Codex native subagents. Ordinary
 prompts use official NDJSON stdin with slash expansion disabled. Timeout and
 output bounds are enforced by the bridge; `max_turns` is retained for interface
 compatibility and is not a native `agy` limit. Native conversation IDs stay on
@@ -69,25 +79,48 @@ Authenticate only on the VPS by running `agy` as `geminimcp`, selecting Google
 OAuth, and completing the [official remote SSH authorization
 flow](https://antigravity.google/docs/cli/install/#remote-ssh-oauth-flow).
 A personal login to the retired `gemini` CLI cannot serve this deployment.
-Owner and partner share the account's plan quota; their SSH keys and bridge
-conversation histories are separate. Public clients connect on the existing
-TCP 22022 SSH listener; a user-specific
+Owner and partner share the account's plan quota; their SSH keys are separate,
+and bridge session mappings and queries are principal-filtered. With file/shell tools,
+the shared VPS service account does not provide filesystem isolation between
+them. Google credentials, tokens, and keys remain on the VPS and are not
+delivered to partners; no local provider login is required. Public clients
+connect on the existing TCP 22022 SSH listener; a user-specific
 forced command routes the `geminimcp` account to the separate Gemini deployment.
+The partner key grants no direct SSH shell or arbitrary SSH command execution;
+Gemini's authorized CLI tools can still execute remote commands.
 The retired 22023 listener is disabled and its VPS firewall rules removed.
 
 Production exposes only logical model `pro`, bound to the authenticated
-account's concrete Gemini Pro model and highest supported reasoning effort.
+account's confirmed highest Pro entry `gemini-3.1-pro-high` with `--effort high`.
 The operator verifies these with `agy models` on the VPS; do not infer a CLI
 identifier from an API name. A root-owned `/etc/gemini-mcp-model-policy.conf`
 sets `GEMINI_PRO_CLI_VALUE` and `GEMINI_PRO_EFFORT`. Until bound, its `auto`
 placeholder is blocked by `GEMINI_MCP_REQUIRE_EXPLICIT_MODEL=1`, and
 `gemini_status.model_selection_ready` is false. Owner and partner use the same
 policy; started tasks retain their concrete model and effort for continuation.
-The bridge never automatically falls back to Flash or another provider.
+The bridge never automatically falls back to Flash, another provider, API-key,
+or Vertex billing.
 
-The deployment sets `useG1Credits=false`. Also confirm account AI Credit
-Overages is `Never` before claiming baseline-plan-only usage: personal OAuth
-does not by itself disable overage credits. Quota exhaustion stops the task.
+`gemini_status.availability` distinguishes an eligible account from an
+official region restriction, missing authentication, or an unknown diagnostic.
+Model binding and a successful OAuth login are separate from service eligibility
+and a successful inference test. The installer refuses to declare verification
+complete while availability is blocked or unknown.
+
+Acceptance completed on 2026-10-02 with official `agy` 1.2.14 personal OAuth.
+Owner and a freshly installed partner-principal client both passed real MCP
+queries, native continuation, list/export/close, and cross-principal rejection.
+Remote command execution and file writing were verified on the VPS; web mode
+read an official source successfully. Both conversation snapshots retain
+`gemini-3.1-pro-high` with `high` effort. The shared TCP 22022 listener was
+unchanged. CLI init lists a global catalogue, including names unavailable to
+the execution registry; task definitions include the supported ordinary tools.
+The private partner Skill/access packages can now be handed over by the owner.
+
+The deployment sets `useG1Credits=false` (also the default). Account AI Credit
+Overages `Never` has not yet been confirmed, so baseline-plan-only usage is not
+established: personal OAuth does not by itself disable overage credits.
+Quota exhaustion stops the task.
 See the [official quota and overage policy](https://antigravity.google/docs/plans/).
 
 ## Hand this repository to another Codex
