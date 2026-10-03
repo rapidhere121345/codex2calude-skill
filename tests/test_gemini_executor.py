@@ -104,6 +104,10 @@ def test_fixed_argv_web_auto_and_compatibility_max_turns() -> None:
         "--disable-slash-commands",
         "--agent",
         "research-web",
+        "--model",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
     ]
     prohibited = {
         "--skip-trust",
@@ -137,8 +141,25 @@ def test_fixed_argv_resume_offline_and_explicit_model() -> None:
         "--conversation",
         "01234567-89ab-cdef-0123-456789abcdef",
         "--model",
-        "gemini-2.5-pro",
+        "gemini-3.8-flash-high",
+        "--effort",
+        "high",
     ]
+
+
+@pytest.mark.parametrize("model", ["auto", "gemini-3.1-pro-high", "other-model", "--model=other"])
+@pytest.mark.parametrize("effort", [None, "low", "medium", "high", "max"])
+def test_cli_policy_ignores_legacy_model_and_effort(model: str, effort: str | None) -> None:
+    command = build_ask_command(
+        _settings(Path("/usr/local/bin/agy")),
+        resume_session_id=None,
+        model_cli_value=model,
+        reasoning_effort=effort,
+        use_web=True,
+        max_turns=20,
+    )
+    assert command[-4:] == ["--model", "gemini-3.8-flash-high", "--effort", "high"]
+    assert command.count("--model") == command.count("--effort") == 1
 
 
 def test_options_validation_retains_max_turns_compatibility() -> None:

@@ -26,7 +26,7 @@ def _write_executable(path: Path, source: str) -> Path:
     return path
 
 
-def _fake_agy(path: Path) -> Path:
+def _fake_agy(path: Path, reported_model: str | None = None) -> Path:
     source = """
         #!/usr/bin/env python3
 import json
@@ -44,11 +44,14 @@ prompt = sys.stdin.readline()
 output = Path(__file__).with_name("invocations.jsonl")
 with output.open("a", encoding="utf-8") as stream:
     stream.write(json.dumps({"argv": sys.argv, "prompt": prompt}) + chr(10))
-result = {"conversation_id": "01234567-89ab-cdef-0123-456789abcdef", "status": "SUCCESS", "response": "answer", "usage": {}}
+session_id = sys.argv[sys.argv.index("--conversation") + 1] if "--conversation" in sys.argv else "01234567-89ab-cdef-0123-456789abcdef"
+result = {"conversation_id": session_id, "status": "SUCCESS", "response": "answer", "usage": {}}
+if __REPORTED_MODEL__ is not None:
+    result["stats"] = {"models": {__REPORTED_MODEL__: {"tokens": {"input": 1}}}}
 print(json.dumps({"event": "result", "result": result}), flush=True)
 sys.stdin.read()
     """
-    return _write_executable(path, source)
+    return _write_executable(path, source.replace("__REPORTED_MODEL__", repr(reported_model)))
 
 
 def _settings(
@@ -95,7 +98,7 @@ def _invocations(path: Path) -> list[dict]:
     return [json.loads(line) for line in source.read_text().splitlines()]
 
 
-def test_pro_default_builds_model_and_max_effort_argv(tmp_path: Path) -> None:
+def test_pro_default_builds_fixed_flash_high_argv(tmp_path: Path) -> None:
     binary = _fake_agy(tmp_path / "agy")
     command = build_ask_command(
         _settings(binary),
@@ -106,19 +109,19 @@ def test_pro_default_builds_model_and_max_effort_argv(tmp_path: Path) -> None:
         max_turns=20,
     )
 
-    assert command[-4:] == ["--model", "fake-pro-model", "--effort", "max"]
+    assert command[-4:] == ["--model", "gemini-3.8-flash-high", "--effort", "high"]
 
 
-def test_reported_model_must_match_concrete_policy_exactly() -> None:
+def test_reported_model_matches_effective_policy_even_with_old_snapshot() -> None:
     policy = ModelPolicy(
         "pro", "gemini-fake-pro-model", "gemini", DEFAULT_REQUIRED_CLI_VERSION, "max"
     )
     unknown = {"actual_models": []}
-    exact = {"actual_models": ["gemini-fake-pro-model"]}
-    different = {"actual_models": ["gemini-fake-flash-model"]}
+    exact = {"actual_models": ["gemini-3.8-flash-high"]}
+    different = {"actual_models": ["gemini-fake-pro-model"]}
 
     assert _assert_requested_policy(unknown, policy) == []
-    assert _assert_requested_policy(exact, policy) == ["gemini-fake-pro-model"]
+    assert _assert_requested_policy(exact, policy) == ["gemini-3.8-flash-high"]
     with pytest.raises(ExecutionError, match="exactly match"):
         _assert_requested_policy(different, policy)
 
@@ -137,106 +140,79 @@ def test_invalid_effort_is_rejected(tmp_path: Path) -> None:
         load_settings(environment)
 
 
-def test_pending_auto_blocks_prompt_before_cli_in_explicit_mode(tmp_path: Path) -> None:
+def test_legacy_auto_config_reports_fixed_policy_and_allows_inference(tmp_path: Path) -> None:
     binary = _fake_agy(tmp_path / "agy")
     app = create_app(_settings(binary, pro=False, explicit=True))
 
     status = asyncio.run(get_tool(app, "gemini_status")())
-    assert status["default_model"] == "auto"
-    assert status["model_selection_ready"] is False
-    assert status["models"]["auto"]["selection_ready"] is False
-    with pytest.raises(ExecutionError, match="model selection pending"):
-        asyncio.run(get_tool(app, "gemini_once")("secret prompt"))
-    with pytest.raises(ExecutionError, match="model selection pending"):
-        asyncio.run(get_tool(app, "gemini_start")("secret prompt"))
-    assert _invocations(tmp_path) == []
-
-
-def test_status_reports_default_model_selection_state(tmp_path: Path) -> None:
-    binary = _fake_agy(tmp_path / "agy")
-    app = create_app(_settings(binary, pro=True, explicit=True))
-
-    status = asyncio.run(get_tool(app, "gemini_status")())
-
     assert status["default_model"] == "pro"
+    assert status["reasoning_effort"] == "high"
     assert status["model_selection_ready"] is True
     assert status["models"]["pro"]["selection_ready"] is True
+    assert status["models"]["auto"]["selection_ready"] is True
+    asyncio.run(get_tool(app, "gemini_once")("prompt"))
+    assert _invocations(tmp_path)[0]["argv"][-4:] == [
+        "--model", "gemini-3.8-flash-high", "--effort", "high"
+    ]
 
 
-def test_start_snapshot_survives_alias_remap_on_continue(tmp_path: Path) -> None:
-    binary = _fake_agy(tmp_path / "agy")
+@pytest.mark.parametrize("model", [None, "", "pro", "auto", "gemini-3.1-pro-high", "other-model"])
+@pytest.mark.parametrize("reported_model", [None, "gemini-3.8-flash-high"])
+def test_once_start_continue_share_fixed_policy(
+    tmp_path: Path, model: str | None, reported_model: str | None
+) -> None:
+    binary = _fake_agy(tmp_path / "agy", reported_model)
     settings = _settings(binary)
     app = create_app(settings)
+    once = asyncio.run(get_tool(app, "gemini_once")("isolated", model=model))
+    started = asyncio.run(get_tool(app, "gemini_start")("first", model=model))
+    continued = asyncio.run(get_tool(app, "gemini_continue")(started["conversation_id"], "second"))
 
-    started = asyncio.run(get_tool(app, "gemini_start")("first prompt"))
-    conversation = started["conversation_id"]
-    first = _invocations(tmp_path)[0]
-    assert first["argv"][-4:] == ["--model", "fake-pro-model", "--effort", "max"]
-
-    remapped = ModelPolicy("pro", "remapped-model", "gemini", DEFAULT_REQUIRED_CLI_VERSION, "high")
-    remapped_settings = Settings(
-        **{
-            **settings.__dict__,
-            "models": {"pro": remapped},
-        }
-    )
-    remapped_app = create_app(remapped_settings)
-    asyncio.run(get_tool(remapped_app, "gemini_continue")(conversation, "second prompt"))
-
-    second = _invocations(tmp_path)[1]
-    assert "--conversation" in second["argv"]
-    assert second["argv"][-4:] == ["--model", "fake-pro-model", "--effort", "max"]
-
-
-def test_compat_auto_snapshot_is_not_replaced_by_alias_remap(tmp_path: Path) -> None:
-    binary = _fake_agy(tmp_path / "agy")
-    settings = _settings(binary, pro=False, explicit=False)
-    app = create_app(settings)
-
-    started = asyncio.run(get_tool(app, "gemini_start")("first prompt"))
-    conversation = started["conversation_id"]
-
-    remapped = ModelPolicy(
-        "auto", "remapped-model", "gemini", DEFAULT_REQUIRED_CLI_VERSION, "high"
-    )
-    remapped_settings = Settings(
-        **{**settings.__dict__, "models": {"auto": remapped}}
-    )
-    remapped_app = create_app(remapped_settings)
-    asyncio.run(get_tool(remapped_app, "gemini_continue")(conversation, "second"))
-
-    second = _invocations(tmp_path)[1]
-    assert "--model" not in second["argv"]
-    assert "--effort" not in second["argv"]
+    for result in (once, started, continued):
+        assert result["model"] == "pro"
+        assert result["actual_models"] == ([] if reported_model is None else [reported_model])
+    invocations = _invocations(tmp_path)
+    assert len(invocations) == 3
+    for invocation in invocations:
+        assert invocation["argv"][-4:] == ["--model", "gemini-3.8-flash-high", "--effort", "high"]
+    assert "--conversation" not in invocations[0]["argv"]
+    assert "--conversation" not in invocations[1]["argv"]
+    assert "--conversation" in invocations[2]["argv"]
+    with sqlite3.connect(settings.database_path) as connection:
+        row = connection.execute(
+            "SELECT model, model_cli_value, reasoning_effort FROM conversations WHERE conversation_id = ?",
+            (started["conversation_id"],),
+        ).fetchone()
+    assert row == ("pro", "gemini-3.8-flash-high", "high")
 
 
-def test_legacy_snapshot_is_rejected_only_in_explicit_mode(tmp_path: Path) -> None:
-    binary = _fake_agy(tmp_path / "agy")
-    settings = _settings(binary, explicit=False)
-    app = create_app(settings)
+@pytest.mark.parametrize("legacy_model", ["pro", "auto", "gemini-3.1-pro-high"])
+@pytest.mark.parametrize("snapshot", [(None, None, None), ("auto", "gemini", None), ("gemini-3.1-pro-high", "gemini", "high")])
+@pytest.mark.parametrize("reported_model", [None, "gemini-3.8-flash-high"])
+def test_legacy_sessions_continue_with_fixed_policy(
+    tmp_path: Path, legacy_model: str, snapshot: tuple, reported_model: str | None
+) -> None:
+    binary = _fake_agy(tmp_path / "agy", reported_model)
+    settings = _settings(binary, explicit=True)
     conversation = "01935555-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     initialize(settings.database_path)
     with sqlite3.connect(settings.database_path) as connection:
         connection.execute(
             "INSERT INTO conversations "
-            "(conversation_id, principal, gemini_session_id, model, use_web, created_at, closed_at, title, last_activity_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-            (
-                conversation,
-                "owner",
-                "legacy-session-id",
-                "pro",
-                1,
-                "2026-01-01T00:00:00+00:00",
-                "legacy",
-                "2026-01-01T00:00:00+00:00",
-            ),
+            "(conversation_id, principal, gemini_session_id, model, use_web, created_at, closed_at, title, last_activity_at, model_cli_value, model_family, reasoning_effort) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
+            (conversation, "owner", "legacy-session-id", legacy_model, 0,
+             "2026-01-01T00:00:00+00:00", "legacy", "2026-01-01T00:00:00+00:00", *snapshot),
         )
-
-    with pytest.raises(ExecutionError, match="no model snapshot"):
-        app_explicit = create_app(_settings(binary, explicit=True))
-        asyncio.run(get_tool(app_explicit, "gemini_continue")(conversation, "prompt"))
-    assert _invocations(tmp_path) == []
+    app = create_app(settings)
+    result = asyncio.run(get_tool(app, "gemini_continue")(conversation, "prompt"))
+    assert result["model"] == "pro"
+    assert result["use_web"] is False
+    assert result["actual_models"] == ([] if reported_model is None else [reported_model])
+    command = _invocations(tmp_path)[0]["argv"]
+    assert command[command.index("--conversation") + 1] == "legacy-session-id"
+    assert command[command.index("--agent") + 1] == "research-offline"
+    assert command[-4:] == ["--model", "gemini-3.8-flash-high", "--effort", "high"]
 
 
 def test_seven_tool_names_are_unchanged(tmp_path: Path) -> None:

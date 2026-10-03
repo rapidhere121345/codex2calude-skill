@@ -96,8 +96,8 @@ remote files, commands, and other ordinary tools for explicit tasks.
 `use_web=false` requests no web research; it is not technical isolation from
 web, files, or shell. The initial catalogue proves neither effective tool
 permissions nor tool-context pruning. Do not let `agy` spawn or delegate other
-AI agents or tasks, or use commands to switch AI CLIs/models to bypass fixed
-Pro; collaboration remains with the outer Codex native subagents. Ordinary
+AI agents or tasks, or use commands to switch AI CLIs/models to bypass the VPS
+model policy; collaboration remains with the outer Codex native subagents. Ordinary
 prompts use official NDJSON stdin with slash expansion disabled. Timeout and
 output bounds are enforced by the bridge; `max_turns` is retained for interface
 compatibility and is not a native `agy` limit. Native conversation IDs stay on
@@ -119,16 +119,22 @@ The partner key grants no direct SSH shell or arbitrary SSH command execution;
 Gemini's authorized CLI tools can still execute remote commands.
 The retired 22023 listener is disabled and its VPS firewall rules removed.
 
-Production exposes only logical model `pro`, bound to the authenticated
-account's confirmed highest Pro entry `gemini-3.1-pro-high` with `--effort high`.
-The operator verifies these with `agy models` on the VPS; do not infer a CLI
-identifier from an API name. A root-owned `/etc/gemini-mcp-model-policy.conf`
-sets `GEMINI_PRO_CLI_VALUE` and `GEMINI_PRO_EFFORT`. Until bound, its `auto`
-placeholder is blocked by `GEMINI_MCP_REQUIRE_EXPLICIT_MODEL=1`, and
-`gemini_status.model_selection_ready` is false. Owner and partner use the same
-policy; started tasks retain their concrete model and effort for continuation.
-The bridge never automatically falls back to Flash, another provider, API-key,
-or Vertex billing.
+The VPS fixes every Gemini inference invocation to `gemini-3.8-flash-high` with
+`--effort high`, verified against the service account's `agy models` catalogue.
+The existing logical name `pro` remains a compatibility value for installed
+clients. Caller model strings and old conversation model snapshots do not
+select the CLI model: one-shot queries, new conversations, and continuations
+all use the same server-side Flash policy. Returned model metadata is checked
+against that effective policy; an empty `actual_models` remains unknown rather
+than being filled from configuration.
+
+This is a VPS-only upgrade. The seven MCP tools and their schemas, client MCP
+registration, and installed Skill stay unchanged. The root-owned
+`/etc/gemini-mcp-model-policy.conf` retains its legacy `GEMINI_PRO_*` variable
+names for the existing launcher. Deploy the backend patch and recycle idle
+Gemini MCP server processes so existing reconnecting clients load it. Owner
+and partner share the fixed selection; there is no automatic model/provider
+fallback or change to Google OAuth, API-key, or Vertex billing.
 
 `gemini_status.availability` distinguishes an eligible account from an
 official region restriction, missing authentication, or an unknown diagnostic.
@@ -140,7 +146,7 @@ Acceptance completed on 2026-10-02 with official `agy` 1.2.14 personal OAuth.
 Owner and a freshly installed partner-principal client both passed real MCP
 queries, native continuation, list/export/close, and cross-principal rejection.
 Remote command execution and file writing were verified on the VPS; web mode
-read an official source successfully. The production policy binds `pro` to
+read an official source successfully. That acceptance used a policy binding `pro` to
 `gemini-3.1-pro-high` with `high` effort; do not infer a currently billed model
 when usage metadata is empty. The shared TCP 22022 listener was unchanged. CLI
 init lists a global catalogue, including names unavailable to the execution

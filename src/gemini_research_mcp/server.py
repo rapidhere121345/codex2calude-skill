@@ -16,7 +16,7 @@ from mcp.server.fastmcp import FastMCP
 from .config import (
     ConfigurationError,
     ModelPolicy,
-    REASONING_EFFORTS,
+    EFFECTIVE_CLI_POLICY,
     Settings,
     clean_gemini_session_id,
     load_settings,
@@ -505,6 +505,7 @@ def _assert_requested_family(
 def _assert_requested_policy(
     parsed: dict[str, object], policy: ModelPolicy
 ) -> list[str]:
+    policy = EFFECTIVE_CLI_POLICY
     actual_models = _assert_requested_family(parsed, policy.family)
     # CLI-reported identifiers are compared verbatim. Unknown (empty) metadata
     # remains unknown; no alias, casing, or display-name normalization is guessed.
@@ -640,57 +641,15 @@ def _result(
 
 
 def _start_policy(settings: Settings, logical_model: str) -> ModelPolicy:
-    policy = settings.models[logical_model]
-    if settings.require_explicit_model and policy.cli_value == "auto":
-        raise ConfigurationError(
-            "model selection pending: bind GEMINI_MCP_MODELS to an explicit CLI model"
-        )
-    return policy
+    return EFFECTIVE_CLI_POLICY
 
 
 def _continue_policy(
     settings: Settings, logical_model: str, record: object
 ) -> ModelPolicy:
-    if logical_model not in settings.models:
-        raise ConfigurationError("model is unavailable")
-    current = settings.models[logical_model]
-    cli_value = getattr(record, "model_cli_value", None)
-    family = getattr(record, "model_family", None)
-    effort = getattr(record, "reasoning_effort", None)
-    snapshot = cli_value is not None or family is not None or effort is not None
-    if not snapshot:
-        if settings.require_explicit_model:
-            raise ConfigurationError(
-                "conversation has no model snapshot; start a new explicit-model conversation"
-            )
-        return current
-    if not isinstance(cli_value, str):
-        raise ConfigurationError("conversation has an invalid model snapshot")
-    if family is not None and not isinstance(family, str):
-        raise ConfigurationError("conversation has an invalid model snapshot")
-    if effort is not None and (
-        not isinstance(effort, str) or effort.casefold() not in REASONING_EFFORTS
-    ):
-        raise ConfigurationError("conversation has an invalid model snapshot")
-    if cli_value in (None, "auto"):
-        if not settings.require_explicit_model:
-            return ModelPolicy(
-                logical_name=logical_model,
-                cli_value=cli_value,
-                family=family if family is not None else current.family,
-                min_cli_version=current.min_cli_version,
-                reasoning_effort=effort.casefold() if isinstance(effort, str) else None,
-            )
-        raise ConfigurationError(
-            "conversation model selection is pending; start a new conversation"
-        )
-    return ModelPolicy(
-        logical_name=logical_model,
-        cli_value=cli_value,
-        family=family if family is not None else current.family,
-        min_cli_version=current.min_cli_version,
-        reasoning_effort=effort.casefold() if isinstance(effort, str) else None,
-    )
+    # Existing native sessions stay resumable; their former concrete model and
+    # effort snapshots are historical metadata, not execution policy.
+    return EFFECTIVE_CLI_POLICY
 
 
 def _gemini_home() -> Path:
@@ -1089,7 +1048,8 @@ def create_app(settings: Settings) -> FastMCP:
                     ) = _usage_diagnostic(raw.stdout)
 
             model_status = {}
-            for name, policy in settings.models.items():
+            for name in dict.fromkeys((*settings.models, EFFECTIVE_CLI_POLICY.logical_name)):
+                policy = EFFECTIVE_CLI_POLICY
                 model_supported = (
                     server_compatible
                     and version_tuple is not None
@@ -1123,13 +1083,9 @@ def create_app(settings: Settings) -> FastMCP:
                     "eligible": usage_availability == "eligible",
                 },
                 "models": model_status,
-                "default_model": settings.default_model,
-                "reasoning_effort": settings.models[
-                    settings.default_model
-                ].reasoning_effort,
-                "model_selection_ready": (
-                    settings.models[settings.default_model].cli_value != "auto"
-                ),
+                "default_model": EFFECTIVE_CLI_POLICY.logical_name,
+                "reasoning_effort": EFFECTIVE_CLI_POLICY.reasoning_effort,
+                "model_selection_ready": True,
                 "quota": {
                     "available": False,
                     "reason": "not_reported_by_gemini_cli",

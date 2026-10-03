@@ -38,6 +38,13 @@ class ModelPolicy:
     reasoning_effort: str | None = None
 
 
+# VPS-owned selection. Client aliases, deployed legacy configuration, and
+# conversation snapshots must never override the CLI model or its effort.
+EFFECTIVE_CLI_POLICY = ModelPolicy(
+    "pro", "gemini-3.8-flash-high", "gemini", DEFAULT_REQUIRED_CLI_VERSION, "high"
+)
+
+
 @dataclass(frozen=True)
 class Settings:
     work_root: Path
@@ -279,11 +286,10 @@ def validate_prompt(prompt: object, limit: int) -> str:
 
 
 def validate_model(model: object, settings: Settings) -> str:
-    logical = settings.default_model if model in (None, "") else model
-    if not isinstance(logical, str) or logical not in settings.models:
-        allowed = ", ".join(sorted(settings.models)) or "(none)"
-        raise ConfigurationError(f"model is unavailable; allowed models: {allowed}")
-    return logical
+    # Keep the public string parameter for older clients, but ignore its value.
+    if model is not None and not isinstance(model, str):
+        raise ConfigurationError("model must be a string")
+    return EFFECTIVE_CLI_POLICY.logical_name
 
 
 def validate_conversation_id(value: object) -> str:

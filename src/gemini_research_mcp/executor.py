@@ -10,7 +10,7 @@ from pathlib import Path
 import signal
 import subprocess
 
-from .config import Settings
+from .config import EFFECTIVE_CLI_POLICY, Settings
 from .diagnostics import attach_raw_error
 
 
@@ -238,10 +238,10 @@ def build_ask_command(
     ]
     if resume_session_id is not None:
         command += ["--conversation", resume_session_id]
-    if model_cli_value != "auto":
-        command += ["--model", model_cli_value]
-    if reasoning_effort is not None:
-        command += ["--effort", reasoning_effort]
+    command += [
+        "--model", EFFECTIVE_CLI_POLICY.cli_value,
+        "--effort", EFFECTIVE_CLI_POLICY.reasoning_effort,
+    ]
     # max_turns is intentionally not translated to a CLI flag: Antigravity
     # 1.2.14 does not expose one. It remains a compatibility input at the MCP
     # layer; timeout_seconds and bounded output pipes are the enforceable
