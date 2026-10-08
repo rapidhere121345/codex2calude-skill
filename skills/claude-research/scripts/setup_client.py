@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from collections.abc import Mapping
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -53,6 +55,7 @@ LEGACY_TOOLS = (
 )
 PRINCIPALS = ("owner", "partner")
 FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{43}$")
+RECONNECT_PROXY = Path(__file__).resolve().parent / "mcp_ssh_reconnect.py"
 
 
 class SetupError(RuntimeError):
@@ -190,6 +193,22 @@ def ssh_args(
 
 
 def expected_config(
+    key_path: Path,
+    known_hosts_path: Path,
+    tools: tuple[str, ...] = TOOLS,
+    *,
+    ssh_user: str = SSH_USER,
+) -> dict[str, Any]:
+    return {
+        "command": "python3",
+        "args": [str(RECONNECT_PROXY), "ssh", "-F", "none", *ssh_args(key_path, known_hosts_path, ssh_user=ssh_user)],
+        "startup_timeout_sec": 60,
+        "tool_timeout_sec": 720,
+        "enabled_tools": list(tools),
+    }
+
+
+def direct_config(
     key_path: Path,
     known_hosts_path: Path,
     tools: tuple[str, ...] = TOOLS,
@@ -392,20 +411,11 @@ def validate_config(
     section = servers["claude_research"]
     if section == expected:
         return "current", raw
-    known_generated_configs = (
-        expected_config(key_path, known_hosts_path, LEGACY_TOOLS),
-        expected_config(
-            key_path,
-            known_hosts_path,
-            TOOLS,
-            ssh_user=LEGACY_SSH_USER,
-        ),
-        expected_config(
-            key_path,
-            known_hosts_path,
-            LEGACY_TOOLS,
-            ssh_user=LEGACY_SSH_USER,
-        ),
+    known_generated_configs = tuple(
+        factory(key_path, known_hosts_path, tools, ssh_user=ssh_user)
+        for factory in (direct_config, expected_config)
+        for ssh_user in (SSH_USER, LEGACY_SSH_USER)
+        for tools in (TOOLS, LEGACY_TOOLS)
     )
     if section in known_generated_configs:
         return "legacy", raw
@@ -428,7 +438,7 @@ def config_block(key_path: Path, known_hosts_path: Path) -> str:
     args = "\n".join(f"  {toml_string(item)}," for item in expected["args"])
     return f'''
 [mcp_servers.claude_research]
-command = "ssh"
+command = {toml_string(expected["command"])}
 args = [
 {args}
 ]
@@ -450,7 +460,7 @@ def migrate_legacy_config(
     if len(starts) != 1:
         raise SetupError("旧版 claude_research 配置无法安全定位；已拒绝自动迁移")
     start = starts[0]
-    next_header = re.search(r"(?m)^\[[^\r\n]+\][ \t]*$", text[start + len(header) :])
+    next_header = re.search(r"(?m)^[ \t]*\[[^\r\n]+\][ \t]*(?:#[^\r\n]*)?$", text[start + len(header) :])
     end = (
         start + len(header) + next_header.start()
         if next_header is not None
@@ -466,6 +476,11 @@ def migrate_legacy_config(
         key_path, known_hosts_path
     ):
         raise SetupError("旧版 claude_research 配置迁移校验失败；已停止")
+    original = tomllib.loads(text)
+    expected_document = copy.deepcopy(original)
+    expected_document["mcp_servers"]["claude_research"] = expected_config(key_path, known_hosts_path)
+    if parsed != expected_document:
+        raise SetupError("迁移会改变其他配置；已停止")
     return updated.encode("utf-8")
 
 
@@ -478,6 +493,14 @@ def prepare_config(
         return
     if state == "legacy":
         assert raw is not None
+        digest = hashlib.sha256(raw).hexdigest()[:16]
+        backup = config_path.with_name(f"{config_path.name}.pre-claude-{digest}.bak")
+        if backup.exists():
+            require_regular_file(backup)
+            if backup.read_bytes() != raw:
+                raise SetupError("已有配置备份内容不一致；已停止")
+        else:
+            atomic_create(backup, raw)
         atomic_replace(
             config_path,
             migrate_legacy_config(raw, key_path, known_hosts_path),

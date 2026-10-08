@@ -47,6 +47,24 @@ The setup script is fail-closed: it must not overwrite an existing key,
 different host pin, or conflicting `claude_research` MCP entry. Diagnose such a
 conflict and ask before changing it manually.
 
+## Idle transport and upgrades
+
+The client proxy releases SSH after 30 minutes without a request in flight or
+queued work. The local MCP endpoint stays alive and reconnects on the next
+request, privately replaying only the MCP handshake. Never replay an uncertain
+`tools/call`. Protocol pings do not need a remote worker. The VPS also releases
+idle workers after 30 minutes, while active requests retain their normal limits.
+
+Partner upgrades require the updated proxy script and an MCP client restart;
+server-side timeout alone cannot prevent an old eager proxy from reconnecting.
+Replace the installed Skill with the validated repository version, preserving
+existing dedicated keys and host pins, then run `scripts/setup_client.py
+--principal partner --verify`. Do not pass `--import-key` again. Setup migrates
+only a recognized previous registration and backs up the old configuration;
+custom conflicting entries remain fail-closed. Resolve a symlinked Codex home
+and pass the real directory with `--codex-home` when needed. No local account
+login or private-key transfer is part of an upgrade.
+
 ## Choose the interaction
 
 - Use `claude_once` for one independent question that will not need follow-up.

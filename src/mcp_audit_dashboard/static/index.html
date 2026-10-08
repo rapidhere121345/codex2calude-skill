@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>MCP 审计与健康面板</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>MCP 审计与健康面板</h1>
+      <p id="snapshot-status">正在读取缓存快照…</p>
+    </div>
+    <form id="filters" autocomplete="off">
+      <label>桥接 <select id="bridge">
+        <option value="total">全部</option>
+        <option value="claude">Claude</option>
+        <option value="gemini">Gemini</option>
+      </select></label>
+      <label>身份 <select id="principal">
+        <option value="total">总计</option>
+        <option value="owner">Owner</option>
+        <option value="partner">Partner</option>
+      </select></label>
+      <label>时间 <select id="period">
+        <option value="24h">24 小时</option>
+        <option value="7d">7 天</option>
+        <option value="30d">30 天</option>
+        <option value="all">全部历史</option>
+      </select></label>
+      <button type="submit">刷新缓存数据</button>
+    </form>
+  </header>
+
+  <main>
+    <section aria-labelledby="usage-title">
+      <h2 id="usage-title">用量汇总</h2>
+      <div id="summary-cards" class="cards"></div>
+      <div id="token-policy" class="policy"></div>
+    </section>
+
+    <section aria-labelledby="health-title">
+      <h2 id="health-title">账户与桥接健康</h2>
+      <div id="health-grid" class="health-grid"></div>
+      <h3>系统监控</h3>
+      <dl id="system-health" class="system-health"></dl>
+    </section>
+
+    <section aria-labelledby="recent-title">
+      <h2 id="recent-title">最近审计记录（已脱敏）</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th><th>桥接</th><th>身份</th><th>工具</th>
+              <th>配置/逻辑模型</th><th>CLI 上报模型</th>
+              <th>状态</th><th>耗时</th><th>错误</th><th>令牌来源</th>
+            </tr>
+          </thead>
+          <tbody id="recent-events"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

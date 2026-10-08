@@ -483,3 +483,12 @@ the production defaults. There is no hourly bridge call quota.
 1–3600 seconds. The burst guard is isolated by principal and MCP conversation;
 blocked attempts are audited but do not enter the rolling count. Large package
 caches remain inside the project.
+
+
+## 运维与空闲回收（2026-10）
+
+SSH worker 默认空闲 30 分钟释放，客户端下一次真实请求才重连，协议 ping 不续命。
+服务端空闲保护须与新版客户端代理同时使用；已有客户端进程需重启。
+
+- [Partner 更新说明](docs/PARTNER_UPDATE_20261009.md)
+- [只读审计页与账号风险审查](docs/SECURITY_REVIEW_20261009.md)

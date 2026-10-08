@@ -1,0 +1,22 @@
+[Unit]
+Description=Read-only MCP account and transport health snapshot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/mcp-audit/collect-audit-health.py
+TimeoutStartSec=210
+UMask=0027
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mcp-audit /var/lib/claude-mcp /var/lib/gemini-mcp
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryMax=512M

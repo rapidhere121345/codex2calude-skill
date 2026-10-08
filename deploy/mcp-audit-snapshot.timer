@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh sanitized MCP audit metadata every minute
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=60s
+RandomizedDelaySec=5s
+Unit=mcp-audit-snapshot.service
+
+[Install]
+WantedBy=timers.target

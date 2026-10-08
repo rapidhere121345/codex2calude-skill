@@ -55,6 +55,7 @@ from .persistence import (
     count_audit_texts,
     patch_audit_conversation,
     record_audit_event,
+    recorded_token_usage,
     record_conversation_messages,
     reserve_call,
 )
@@ -1190,6 +1191,10 @@ def create_app(settings: Settings) -> FastMCP:
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
                 request_id=request_id,
+                token_usage=recorded_token_usage(
+                    parsed["model_usage"], "gemini_cli_result"
+                ),
+                reported_models=actual_models,
             )
             return result
         except BaseException as exc:
@@ -1304,6 +1309,10 @@ def create_app(settings: Settings) -> FastMCP:
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
                 request_id=request_id,
+                token_usage=recorded_token_usage(
+                    parsed["model_usage"], "gemini_cli_result"
+                ),
+                reported_models=actual_models,
             )
             return result
         except BaseException as exc:
@@ -1428,6 +1437,10 @@ def create_app(settings: Settings) -> FastMCP:
                 status="success",
                 duration_ms=int((time.monotonic() - start) * 1000),
                 request_id=request_id,
+                token_usage=recorded_token_usage(
+                    parsed["model_usage"], "gemini_cli_result"
+                ),
+                reported_models=actual_models,
             )
             return result
         except ContinueBurstLimitError as exc:

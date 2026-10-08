@@ -70,4 +70,5 @@ exec /usr/bin/env -i \
     NO_COLOR="$NO_COLOR" \
     PYTHONNOUSERSITE=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 /opt/claude-research-mcp/current/scripts/mcp-idle-guard.py \
     /opt/claude-research-mcp/current/.venv/bin/claude-research-mcp

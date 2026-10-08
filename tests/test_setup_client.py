@@ -594,3 +594,31 @@ def test_real_exchange_classifies_unauthorized_process() -> None:
     ]
     with pytest.raises(setup.VerifyError, match="服务器尚未授权"):
         setup.exchange_mcp(command)
+
+
+def test_direct_ssh_upgrade_backs_up_and_preserves_identity(tool_mocks, workspace):
+    assert run(workspace) == 0
+    codex_home, key_path, known_hosts_path = workspace
+    config_path = codex_home / 'config.toml'
+    direct = setup.direct_config(key_path, known_hosts_path)
+    raw = ('# preserved\n[mcp_servers.claude_research]\n' + '\n'.join(
+        f'{k} = {json.dumps(v)}' for k, v in direct.items()) + '\n').encode()
+    config_path.write_bytes(raw)
+    assert run(workspace) == 0
+    import tomllib
+    migrated = tomllib.loads(config_path.read_text())['mcp_servers']['claude_research']
+    assert migrated['command'] == 'python3'
+    assert migrated['args'][1:4] == ['ssh', '-F', 'none']
+    assert migrated['args'][4:] == direct['args']
+    assert migrated['startup_timeout_sec'] > 45
+    assert next(codex_home.glob('config.toml.pre-claude-*.bak')).read_bytes() == raw
+
+
+def test_migration_preserves_commented_following_table(tool_mocks, workspace):
+    assert run(workspace)==0
+    codex_home,key_path,known_hosts_path=workspace
+    direct=setup.direct_config(key_path,known_hosts_path)
+    raw='[mcp_servers.claude_research]\n'+'\n'.join(f'{k} = {json.dumps(v)}' for k,v in direct.items())+'\n[mcp_servers.other] # preserve me\ncommand="keep"\n'
+    updated=setup.migrate_legacy_config(raw.encode(),key_path,known_hosts_path)
+    import tomllib
+    assert tomllib.loads(updated.decode())['mcp_servers']['other']=={'command':'keep'}

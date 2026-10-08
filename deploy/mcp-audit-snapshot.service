@@ -1,0 +1,21 @@
+[Unit]
+Description=Export sanitized read-only MCP audit metadata
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/mcp-audit/collect-audit-health.py --audit-only
+TimeoutStartSec=30
+UMask=0027
+Nice=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+# WAL readers may create locks; SQL uses mode=ro and query_only.
+ReadWritePaths=/var/lib/mcp-audit /var/lib/claude-mcp/research/state /var/lib/gemini-mcp/research/state
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+MemoryMax=128M

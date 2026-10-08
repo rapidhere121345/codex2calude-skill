@@ -49,4 +49,5 @@ exec /usr/bin/env -i \
     NO_COLOR=1 \
     PYTHONNOUSERSITE=1 \
     PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 /opt/gemini-research-mcp/current/scripts/mcp-idle-guard.py \
     /opt/gemini-research-mcp/current/.venv/bin/gemini-research-mcp

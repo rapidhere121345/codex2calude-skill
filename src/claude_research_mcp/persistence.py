@@ -5,8 +5,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import sqlite3
+import time
 import uuid
 
 
@@ -32,6 +34,28 @@ AUDIT_ERROR_CATEGORIES = frozenset(
 _HTTP_STATUS_ALLOWLIST = frozenset(
     (400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504)
 )
+_TOKEN_USAGE_FIELDS = frozenset(
+    (
+        "input_tokens",
+        "output_tokens",
+        "thinking_tokens",
+        "cache_creation_tokens",
+        "cache_read_tokens",
+        "total_tokens",
+    )
+)
+_TOKEN_USAGE_SOURCES = frozenset(("claude_cli_result",))
+_TOKEN_USAGE_ALIASES = {
+    "cache_creation_tokens": (
+        "cache_creation_tokens",
+        "cache_creation_input_tokens",
+    ),
+    "cache_read_tokens": (
+        "cache_read_tokens",
+        "cache_read_input_tokens",
+        "cached_tokens",
+    ),
+}
 
 
 def _safe_category(value: object) -> str | None:
@@ -64,6 +88,53 @@ def _safe_raw_log_saved(value: object) -> int | None:
     if value is None:
         return None
     return int(value) if isinstance(value, bool) else None
+
+
+def recorded_token_usage(
+    model_usage: object, source: str
+) -> tuple[dict[str, int], str] | None:
+    """Normalize only token counts explicitly present in a CLI result."""
+
+    entries = (
+        model_usage
+        if isinstance(model_usage, list)
+        else [model_usage]
+        if isinstance(model_usage, dict)
+        else None
+    )
+    if source not in _TOKEN_USAGE_SOURCES or entries is None:
+        return None
+    entries = [entry for entry in entries if isinstance(entry, dict)]
+    if not entries:
+        return None
+    totals = {}
+    for field in _TOKEN_USAGE_FIELDS:
+        values = []
+        for entry in entries:
+            for key in _TOKEN_USAGE_ALIASES.get(field, (field,)):
+                value = entry.get(key)
+                if type(value) is int and 0 <= value <= 2**63 - 1:
+                    values.append(value)
+                    break  # Aliases name the same metric, not extra usage.
+        # Missing components stay unknown instead of becoming zero/partial totals.
+        if len(values) == len(entries) and sum(values) <= 2**63 - 1:
+            totals[field] = sum(values)
+    return (totals, source) if totals else None
+
+
+def _safe_reported_models(value: object) -> str | None:
+    if not isinstance(value, list):
+        return None
+    models = [
+        item
+        for item in value
+        if isinstance(item, str) and item and len(item) <= 200
+    ][:8]
+    return (
+        json.dumps(models, ensure_ascii=False, separators=(",", ":"))
+        if models
+        else None
+    )
 
 
 class SessionOwnershipError(PermissionError):
@@ -116,9 +187,20 @@ def transaction(database_path: Path):
         connection.close()
 
 
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    for attempt in range(60):
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 59:
+                raise
+            time.sleep(0.05)
+
+
 def initialize(database_path: Path) -> None:
     with transaction(database_path) as db:
-        db.execute("PRAGMA journal_mode = WAL")
+        _enable_wal(db)
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS conversations (
@@ -192,6 +274,20 @@ def initialize(database_path: Path) -> None:
             db.execute("ALTER TABLE audit_log ADD COLUMN request_id TEXT")
         if "raw_log_saved" not in audit_columns:
             db.execute("ALTER TABLE audit_log ADD COLUMN raw_log_saved INTEGER")
+        for column in (
+            "input_tokens",
+            "output_tokens",
+            "thinking_tokens",
+            "cache_creation_tokens",
+            "cache_read_tokens",
+            "total_tokens",
+        ):
+            if column not in audit_columns:
+                db.execute(f"ALTER TABLE audit_log ADD COLUMN {column} INTEGER")
+        if "token_usage_source" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN token_usage_source TEXT")
+        if "reported_models_json" not in audit_columns:
+            db.execute("ALTER TABLE audit_log ADD COLUMN reported_models_json TEXT")
         db.execute(
             "CREATE INDEX IF NOT EXISTS conversations_principal_activity "
             "ON conversations(principal, last_activity_at, conversation_id)"
@@ -419,14 +515,25 @@ def finish_call(
     exit_code: int | None = None,
     request_id: str | None = None,
     raw_log_saved: bool | None = None,
+    token_usage: tuple[dict[str, int], str] | None = None,
+    reported_models: list[str] | None = None,
 ) -> None:
     if status not in AUDIT_STATUSES:
         raise ValueError("invalid audit status")
     with transaction(database_path) as db:
+        normalized = (
+            recorded_token_usage(token_usage[0], token_usage[1])
+            if token_usage is not None
+            else None
+        )
+        tokens, token_source = normalized if normalized is not None else ({}, None)
         db.execute(
             "UPDATE audit_log SET status = ?, duration_ms = ?, error_category = ?, "
             "http_status = ?, exit_code = ?, request_id = COALESCE(?, request_id), "
-            "raw_log_saved = ? WHERE id = ?",
+            "raw_log_saved = ?, input_tokens = ?, output_tokens = ?, "
+            "thinking_tokens = ?, cache_creation_tokens = ?, cache_read_tokens = ?, "
+            "total_tokens = ?, token_usage_source = ?, reported_models_json = ? "
+            "WHERE id = ?",
             (
                 status,
                 duration_ms,
@@ -435,6 +542,14 @@ def finish_call(
                 _safe_exit_code(exit_code),
                 _safe_request_id(request_id),
                 _safe_raw_log_saved(raw_log_saved),
+                tokens.get("input_tokens"),
+                tokens.get("output_tokens"),
+                tokens.get("thinking_tokens"),
+                tokens.get("cache_creation_tokens"),
+                tokens.get("cache_read_tokens"),
+                tokens.get("total_tokens"),
+                token_source,
+                _safe_reported_models(reported_models),
                 audit_id,
             ),
         )
@@ -467,15 +582,24 @@ def record_audit_event(
     exit_code: int | None = None,
     request_id: str | None = None,
     raw_log_saved: bool | None = None,
+    token_usage: tuple[dict[str, int], str] | None = None,
 ) -> None:
     if status not in AUDIT_STATUSES:
         raise ValueError("invalid audit status")
     with transaction(database_path) as db:
+        normalized = (
+            recorded_token_usage(token_usage[0], token_usage[1])
+            if token_usage is not None
+            else None
+        )
+        tokens, token_source = normalized if normalized is not None else ({}, None)
         db.execute(
             "INSERT INTO audit_log "
             "(principal, tool, conversation_id, model, status, duration_ms, created_at, "
-            "error_category, http_status, exit_code, request_id, raw_log_saved) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "error_category, http_status, exit_code, request_id, raw_log_saved, "
+            "input_tokens, output_tokens, thinking_tokens, cache_creation_tokens, "
+            "cache_read_tokens, total_tokens, token_usage_source) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 principal,
                 tool,
@@ -489,5 +613,12 @@ def record_audit_event(
                 _safe_exit_code(exit_code),
                 _safe_request_id(request_id),
                 _safe_raw_log_saved(raw_log_saved),
+                tokens.get("input_tokens"),
+                tokens.get("output_tokens"),
+                tokens.get("thinking_tokens"),
+                tokens.get("cache_creation_tokens"),
+                tokens.get("cache_read_tokens"),
+                tokens.get("total_tokens"),
+                token_source,
             ),
         )

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from collections.abc import Mapping
 import hashlib
 import json
@@ -223,7 +224,7 @@ def expected_config(
                 ssh_port=ssh_port,
             ),
         ],
-        "startup_timeout_sec": 20,
+        "startup_timeout_sec": 60,
         "tool_timeout_sec": 720,
         "enabled_tools": list(tools),
     }
@@ -469,6 +470,9 @@ def validate_config(
     section = servers["gemini_research"]
     if section == expected:
         return "current", raw
+    previous_proxy = {**expected, "startup_timeout_sec": 20}
+    if section == previous_proxy:
+        return "legacy", raw
     direct_generated_configs = tuple(
         direct_config(
             key_path,
@@ -527,7 +531,7 @@ def migrate_legacy_config(
     if len(starts) != 1:
         raise SetupError("旧版 gemini_research 配置无法安全定位；已拒绝自动迁移")
     start = starts[0]
-    next_header = re.search(r"(?m)^\[[^\r\n]+\][ \t]*$", text[start + len(header) :])
+    next_header = re.search(r"(?m)^[ \t]*\[[^\r\n]+\][ \t]*(?:#[^\r\n]*)?$", text[start + len(header) :])
     end = (
         start + len(header) + next_header.start()
         if next_header is not None
@@ -543,6 +547,11 @@ def migrate_legacy_config(
         key_path, known_hosts_path
     ):
         raise SetupError("旧版 gemini_research 配置迁移校验失败；已停止")
+    original = tomllib.loads(text)
+    expected_document = copy.deepcopy(original)
+    expected_document["mcp_servers"]["gemini_research"] = expected_config(key_path, known_hosts_path)
+    if parsed != expected_document:
+        raise SetupError("迁移会改变其他配置；已停止")
     return updated.encode("utf-8")
 
 
