@@ -137,10 +137,13 @@ def fake_claude(
         },
         separators=(",", ":"),
     )
+    # Drain the test pipe before immediate shell responses: these fixtures test
+    # response classification, not a child exiting before it accepts stdin.
     body = (
         "#!/bin/sh\n"
-        "if [ \"$1\" = --version ]; then printf '2.1.236\\n'; exit 0; fi\n"
+        "if [ \"$1\" = --version ]; then cat >/dev/null; printf '2.1.236\\n'; exit 0; fi\n"
         "if [ \"$1\" = auth ] && [ \"$2\" = status ]; then\n"
+        "  cat >/dev/null\n"
         f"  printf '%s\\n' '{auth_output}'\n"
         "  exit 0\n"
         "fi\n"
@@ -1078,7 +1081,7 @@ def test_zero_exit_is_error_and_model_mismatch_never_raw_logged(tmp_path, monkey
     payload = json.dumps(
         {"is_error": True, "result": "secret-zero-exit-error", "error": {"status": 429}}
     )
-    settings.claude_bin.write_text("#!/bin/sh\nprintf '%s\\n' '" + payload + "'\n")
+    settings.claude_bin.write_text("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '" + payload + "'\n")
     settings.claude_bin.chmod(0o755)
     with pytest.raises(ExecutionError, match="rate_limit") as caught:
         asyncio.run(get_tool(app, "claude_once")("zero exit"))
@@ -1088,7 +1091,7 @@ def test_zero_exit_is_error_and_model_mismatch_never_raw_logged(tmp_path, monkey
 
     calls.clear()
     settings.claude_bin.write_text(
-        "#!/bin/sh\nprintf '%s\\n' '"
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '"
         + json.dumps({"result": "valid secret success", "sessionId": "x", "modelUsage": {}})
         + "'\n"
     )

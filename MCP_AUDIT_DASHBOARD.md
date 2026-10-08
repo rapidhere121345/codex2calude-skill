@@ -223,3 +223,26 @@ MCP_AUDIT_HEALTH_SNAPSHOT=/tmp/health.json \
 - **令牌覆盖不完整**：旧历史和未暴露 usage 的 CLI 结果保持 NULL；覆盖率是唯一诚实指标，不能把面板总量当作账户计费总量。
 
 采集器读取原始 WAL 数据库时暂用对应 bridge 账号创建 SQLite 锁文件，防止 root 所有的锁阻碍业务写入。快照 unit 仅为这两个 state 目录及输出目录允许文件系统写入；源连接始终 `mode=ro` / `query_only`。网页 unit 不具备这些写权限。
+
+
+## 用量与记录分页
+
+- 首页按 Claude、Gemini 分开展示“我 / Partner / 合计”。主要调用数是推理调用，状态/管理请求另列；推理成功率只对已结束的推理请求计算，进行中请求不当作失败。
+- `GET /api/dashboard` 的 `bridge`、`principal`、`period` 控制本页范围；`event_status=all|success|failed|running` 和 `event_kind=all|inference|admin` 只筛选审计记录，不改动用量汇总。
+- `page` 从 1 起，`page_size` 可选 10、20、50（默认 20）。响应的 `pagination` 含 `page`、`page_size`、`total_rows`、`total_pages`、`has_prev`、`has_next`。空结果为第 1 页 / 0 总页，越界页自动归到末页；非法参数返回 400。
+- 历史记录不再仅截取最新 100 条；每页由服务端返回。翻页是对每次读取的最新快照排序，期间新增记录可能使页边界前移，刷新后以新快照为准。
+- token 未上报时不补零，界面集中解释数据缺口；技术字段放在可展开的详情里。内存使用率以 `(总量 − 可用) / 总量` 计算，Swap 以 `已用 / 总量` 计算。它们是最近一次监测快照，刷新网页不发起服务商调用。
+
+
+Gemini 额度来自官方 `agy -p /usage --output-format json` 的 `command.data.groups`，只选择 `Gemini Models` 下的 `5h` / `weekly` 窗口。bridge 将 `remaining_fraction` 转为剩余/已用百分比并规范化 `reset_time`，采集器沿用每 15 分钟读取一次的流程。缺失、重复、越界或非数值的额度不会补零；不会导出原始说明、账号标识或 agy 的其他模型组。此前额度恒为 unavailable 属于适配遗漏，现已修正。
+
+
+## 界面验收（2026-10-09）
+
+1. PC Chrome，1440px：截图检查后修正过密的嵌套列布局；验证 Claude/Gemini、我/伙伴/合计、记录筛选不改变汇总、翻页、页容量、空结果和快速切换筛选。
+2. 移动 Chrome，360/390px：记录切换为卡片，分页按钮并排；无页面横向溢出，暗色模式及 reduced-motion 可用。以独立测试数据验证缺失数据库不显示为 0、账号不可用、过期快照/额度、缺失内存和未启用 Swap 的提示。
+3. 生产 HTTPS 真实数据：验证 Gemini 5 小时/每周额度、重置时间、全部历史翻页及 provider/principal/status 筛选；复核 owner 200、无/错误身份 401，以及两个服务账号无法伪造 socket 身份。正式页面使用本地资源，不向供应商发起页面驱动的调用。
+
+所有可见文案统一为 `token`，技术诊断收起在“查看详情”中；浏览器标签图标也由同一身份保护的本地路径提供。为稳定现有测试，CLI 测试替身先消费 stdin，再输出用于验证的结果；tmux 清理测试对异步回收保留 1 秒有界等待，未改动生产 CLI 执行逻辑。
+
+最终验证：`.venv/bin/python -m pytest -q` 为 387 passed；JavaScript 语法及 `git diff --check` 通过。

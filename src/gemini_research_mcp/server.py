@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 import re
@@ -545,7 +546,7 @@ async def _run(
         )
 
 def build_agy_usage_command(gemini_bin: Path) -> list[str]:
-    """Official read-only slash command used only for authentication status."""
+    """Official read-only slash command for authentication and quota status."""
 
     return [str(gemini_bin), "-p", "/usage", "--output-format", "json"]
 
@@ -621,6 +622,70 @@ def _usage_diagnostic(
             ):
                 return False, "authentication", "authentication_required"
     return True, "authenticated", "eligible"
+
+
+def _usage_quota(stdout: str) -> dict[str, object]:
+    """Export only measured Gemini quota windows from official agy /usage.
+
+    Account identifiers, free-form descriptions, and other providers' buckets
+    are deliberately omitted. A missing/invalid measurement stays unavailable.
+    """
+    unavailable = {"available": False, "reason": "not_reported_by_agy"}
+    if _usage_diagnostic(stdout)[2] != "eligible":
+        return unavailable
+    payload = json.loads(stdout)
+    command = payload.get("command")
+    if not isinstance(command, dict) or command.get("name") not in ("usage", "/usage"):
+        return unavailable
+    data = command.get("data")
+    groups = data.get("groups") if isinstance(data, dict) else None
+    if not isinstance(groups, list) or len(groups) > 16:
+        return unavailable
+    gemini_groups = [group for group in groups if isinstance(group, dict)
+                     and group.get("name") == "Gemini Models"]
+    if len(gemini_groups) != 1:
+        return unavailable
+    buckets = gemini_groups[0].get("buckets")
+    if not isinstance(buckets, list) or len(buckets) > 16:
+        return unavailable
+    windows = {}
+    seen = set()
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        window = {"5h": "five_hour", "weekly": "seven_day"}.get(
+            bucket.get("window") if isinstance(bucket.get("window"), str) else ""
+        )
+        if window is None:
+            continue
+        if window in seen:
+            return unavailable
+        seen.add(window)
+        fraction = bucket.get("remaining_fraction")
+        if type(fraction) not in (int, float) or not 0 <= fraction <= 1:
+            continue
+        measurement = {
+            "remaining_percent": round(fraction * 100, 2),
+            "used_percent": round((1 - fraction) * 100, 2),
+        }
+        reset = bucket.get("reset_time")
+        if isinstance(reset, str) and len(reset) <= 64:
+            try:
+                timestamp = datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                if timestamp.tzinfo is not None:
+                    measurement["resets_at"] = timestamp.astimezone(timezone.utc).isoformat()
+            except (ValueError, OverflowError):
+                pass
+        windows[window] = measurement
+    if not windows:
+        return unavailable
+    return {
+        "available": True,
+        "source": "antigravity_cli_usage",
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "stale": False,
+        **windows,
+    }
 
 
 def _result(
@@ -1018,6 +1083,7 @@ def create_app(settings: Settings) -> FastMCP:
             usage_logged_in = False
             usage_method: str | None = None
             usage_availability = "unknown"
+            usage_quota = {"available": False, "reason": "not_reported_by_agy"}
             try:
                 usage_raw = await _run(
                     settings,
@@ -1031,6 +1097,7 @@ def create_app(settings: Settings) -> FastMCP:
                         usage_method,
                         usage_availability,
                     ) = _usage_diagnostic(usage_raw.stdout)
+                    usage_quota = _usage_quota(usage_raw.stdout)
             except CommandTimeoutError:
                 # A timed-out diagnostic cannot establish availability. Keep
                 # the old fields false without guessing that this is OAuth.
@@ -1087,10 +1154,7 @@ def create_app(settings: Settings) -> FastMCP:
                 "default_model": EFFECTIVE_CLI_POLICY.logical_name,
                 "reasoning_effort": EFFECTIVE_CLI_POLICY.reasoning_effort,
                 "model_selection_ready": True,
-                "quota": {
-                    "available": False,
-                    "reason": "not_reported_by_gemini_cli",
-                },
+                "quota": usage_quota,
             }
             finish_call(
                 settings.database_path,

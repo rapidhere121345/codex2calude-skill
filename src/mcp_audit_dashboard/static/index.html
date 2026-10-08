@@ -2,68 +2,158 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <title>MCP 审计与健康面板</title>
+  <meta name="color-scheme" content="light dark">
+  <title>MCP 审计中心</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <header>
-    <div>
-      <h1>MCP 审计与健康面板</h1>
-      <p id="snapshot-status">正在读取缓存快照…</p>
+  <div class="dashboard-shell">
+    <nav class="section-rail" aria-label="面板导航">
+      <a href="#usage-section"><span class="rail-mark" aria-hidden="true">用</span><span>用量</span></a>
+      <a href="#monitoring-section"><span class="rail-mark" aria-hidden="true">监</span><span>监控</span></a>
+      <a href="#audit-section"><span class="rail-mark" aria-hidden="true">审</span><span>审计</span></a>
+    </nav>
+
+    <div class="dashboard-flow">
+      <header class="app-header">
+        <div class="brand-lockup">
+          <span class="brand-mark" aria-hidden="true">M</span>
+          <div>
+            <h1>MCP 审计中心</h1>
+            <p>你的 AI 用量，一目了然</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <p id="snapshot-status" class="snapshot-status" role="status" aria-live="polite">正在读取缓存快照…</p>
+          <button id="manual-refresh" type="button">手动刷新</button>
+        </div>
+      </header>
+
+      <form id="dashboard-controls" class="control-dock" autocomplete="off" aria-label="数据筛选">
+        <div class="control-group">
+          <label for="bridge">服务</label>
+          <select id="bridge" name="bridge">
+            <option value="total">全部</option>
+            <option value="claude">Claude</option>
+            <option value="gemini">Gemini</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="principal">身份</label>
+          <select id="principal" name="principal">
+            <option value="total">全部身份</option>
+            <option value="owner">我</option>
+            <option value="partner">伙伴</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="period">周期</label>
+          <select id="period" name="period">
+            <option value="24h">24 小时</option>
+            <option value="7d" selected>7 天</option>
+            <option value="30d">30 天</option>
+            <option value="all">全部</option>
+          </select>
+        </div>
+      </form>
+
+      <main id="main-content">
+        <section id="usage-section" class="panel usage-panel" aria-labelledby="usage-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Usage</p>
+              <h2 id="usage-title">用量概览</h2>
+            </div>
+            <p class="section-caption">Claude 与 Gemini 分开统计</p>
+          </div>
+          <div id="provider-summaries" class="provider-grid">
+            <p class="empty-message">用量数据加载后显示。</p>
+          </div>
+          <p class="token-note">token 仅统计已记录的用量。历史缺失不会估算，可能低于实际消耗。</p>
+        </section>
+
+        <section id="monitoring-section" class="panel" aria-labelledby="monitoring-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Monitoring</p>
+              <h2 id="monitoring-title">连接与系统</h2>
+            </div>
+          </div>
+          <div id="data-quality" class="notice notice-info">读取缓存健康快照。</div>
+          <div id="health-grid" class="health-grid">
+            <p class="empty-message">正在查看服务状态…</p>
+          </div>
+          <div id="system-health" class="system-health">
+            <p class="empty-message">系统容量加载后显示。</p>
+          </div>
+        </section>
+
+        <section id="audit-section" class="panel" aria-labelledby="audit-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Audit trail</p>
+              <h2 id="audit-title">审计记录</h2>
+            </div>
+            <p class="section-caption">已脱敏 · 分页浏览</p>
+          </div>
+          <div class="audit-controls" aria-label="记录筛选">
+        <div class="control-group">
+          <label for="event-status">结果</label>
+          <select id="event-status" name="event_status">
+            <option value="all">全部状态</option>
+            <option value="success">成功</option>
+            <option value="failed">失败</option>
+            <option value="running">进行中</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="event-kind">类型</label>
+          <select id="event-kind" name="event_kind">
+            <option value="all">全部类型</option>
+            <option value="inference">推理</option>
+            <option value="admin">管理</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label for="page-size">每页</label>
+          <select id="page-size" name="page_size">
+            <option value="10">10 条</option>
+            <option value="20" selected>20 条</option>
+            <option value="50">50 条</option>
+          </select>
+        </div>
+          </div>
+          <p class="audit-hint">以下筛选仅影响记录列表，上方用量保持不变。</p>
+          <div class="table-wrap" tabindex="0" aria-label="审计记录表格">
+            <table class="audit-table">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>服务</th>
+                  <th>身份</th>
+                  <th>操作</th>
+                  <th>状态</th>
+                  <th>耗时</th>
+                  <th>失败原因</th>
+                  <th>详情</th>
+                </tr>
+              </thead>
+              <tbody id="recent-events"></tbody>
+            </table>
+          </div>
+          <div id="event-cards" class="event-cards" aria-label="审计记录卡片"></div>
+          <nav class="pagination" aria-label="审计记录分页">
+            <button id="prev-page" type="button">上一页</button>
+            <output id="page-indicator" for="prev-page next-page">第 1 页</output>
+            <button id="next-page" type="button">下一页</button>
+          </nav>
+        </section>
+      </main>
     </div>
-    <form id="filters" autocomplete="off">
-      <label>桥接 <select id="bridge">
-        <option value="total">全部</option>
-        <option value="claude">Claude</option>
-        <option value="gemini">Gemini</option>
-      </select></label>
-      <label>身份 <select id="principal">
-        <option value="total">总计</option>
-        <option value="owner">Owner</option>
-        <option value="partner">Partner</option>
-      </select></label>
-      <label>时间 <select id="period">
-        <option value="24h">24 小时</option>
-        <option value="7d">7 天</option>
-        <option value="30d">30 天</option>
-        <option value="all">全部历史</option>
-      </select></label>
-      <button type="submit">刷新缓存数据</button>
-    </form>
-  </header>
-
-  <main>
-    <section aria-labelledby="usage-title">
-      <h2 id="usage-title">用量汇总</h2>
-      <div id="summary-cards" class="cards"></div>
-      <div id="token-policy" class="policy"></div>
-    </section>
-
-    <section aria-labelledby="health-title">
-      <h2 id="health-title">账户与桥接健康</h2>
-      <div id="health-grid" class="health-grid"></div>
-      <h3>系统监控</h3>
-      <dl id="system-health" class="system-health"></dl>
-    </section>
-
-    <section aria-labelledby="recent-title">
-      <h2 id="recent-title">最近审计记录（已脱敏）</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>时间</th><th>桥接</th><th>身份</th><th>工具</th>
-              <th>配置/逻辑模型</th><th>CLI 上报模型</th>
-              <th>状态</th><th>耗时</th><th>错误</th><th>令牌来源</th>
-            </tr>
-          </thead>
-          <tbody id="recent-events"></tbody>
-        </table>
-      </div>
-    </section>
-  </main>
+  </div>
 
   <script type="module" src="/static/app.js"></script>
 </body>

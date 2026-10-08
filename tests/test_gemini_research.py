@@ -579,3 +579,73 @@ def test_history_export_is_capped_at_500_messages(tmp_path: Path) -> None:
     assert exported["message_count"] == 500
     assert exported["message_truncated"] is True
     assert exported["truncated"] is True
+
+
+def _quota_payload():
+    return {'status':'SUCCESS','command':{'name':'usage','data':{
+        'description':'SECRET_EMAIL@example.invalid',
+        'groups':[
+            {'name':'Claude and GPT models','buckets':[{'window':'weekly','remaining_fraction':1}]},
+            {'name':'Gemini Models','account_token':'SECRET','buckets':[
+                {'window':'weekly','remaining_fraction':.625,'reset_time':'2026-10-11T01:00:00Z','description':'SECRET'},
+                {'window':'5h','remaining_fraction':.9,'reset_time':'2026-10-09T05:00:00Z'},
+            ]},
+        ],
+    }}}
+
+
+def test_agy_quota_maps_only_gemini_windows_and_no_private_payload():
+    result=server_module._usage_quota(json.dumps(_quota_payload()))
+    assert result['available'] is True
+    assert result['source']=='antigravity_cli_usage'
+    assert result['seven_day']=={'used_percent':37.5,'remaining_percent':62.5,'resets_at':'2026-10-11T01:00:00+00:00'}
+    assert result['five_hour']['remaining_percent']==90
+    assert 'SECRET' not in json.dumps(result)
+    assert 'Claude' not in json.dumps(result)
+    assert result['stale'] is False
+
+
+@pytest.mark.parametrize('fraction',[None,True,-.1,1.1,float('nan'),float('inf'),10**500,{'refresh_token':'SECRET'},'0.5'])
+def test_agy_quota_rejects_invalid_values_without_zero_fallback(fraction):
+    payload=_quota_payload()
+    payload['command']['data']['groups'][1]['buckets']=[{'window':'weekly','remaining_fraction':fraction}]
+    result=server_module._usage_quota(json.dumps(payload))
+    assert result['available'] is False
+    assert 'seven_day' not in result
+
+
+def test_agy_quota_accepts_zero_and_one_and_omits_invalid_reset():
+    payload=_quota_payload();buckets=payload['command']['data']['groups'][1]['buckets']
+    buckets[0].update(remaining_fraction=0,reset_time='SECRET')
+    buckets[1].update(remaining_fraction=1,reset_time={'access_token':'SECRET'})
+    result=server_module._usage_quota(json.dumps(payload))
+    assert result['seven_day']=={'used_percent':100,'remaining_percent':0}
+    assert result['five_hour']=={'used_percent':0,'remaining_percent':100}
+
+
+def test_agy_quota_duplicate_windows_and_errors_fail_closed():
+    payload=_quota_payload();buckets=payload['command']['data']['groups'][1]['buckets']
+    buckets.append(dict(buckets[0]))
+    assert server_module._usage_quota(json.dumps(payload))['available'] is False
+    payload=_quota_payload();payload['status']='ERROR';payload['error']='not authenticated'
+    assert server_module._usage_quota(json.dumps(payload))['available'] is False
+    assert server_module._usage_quota('bad-json')['available'] is False
+
+
+def test_status_exposes_official_agy_quota(tmp_path):
+    payload=json.dumps(_quota_payload())
+    binary=_write_executable(tmp_path/'agy',f'''
+        #!/usr/bin/env python3
+        import sys
+        if '--version' in sys.argv:
+            print('1.2.14')
+        elif '/usage' in sys.argv:
+            print({payload!r})
+        else:
+            raise SystemExit(1)
+    ''')
+    result=asyncio.run(get_tool(create_app(_settings(binary)),'gemini_status')())
+    assert result['logged_in'] is True
+    assert result['quota']['available'] is True
+    assert result['quota']['five_hour']['remaining_percent']==90
+    assert 'SECRET' not in json.dumps(result)

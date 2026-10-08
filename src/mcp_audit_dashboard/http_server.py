@@ -12,7 +12,7 @@ import stat
 import struct
 from urllib.parse import parse_qs, urlsplit
 
-from .aggregation import aggregate_dashboard, parse_filters
+from .aggregation import aggregate_dashboard, parse_event_filters, parse_filters
 from .config import DashboardConfig
 from .health import read_health_snapshot
 
@@ -24,6 +24,7 @@ CSP = (
     "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 )
 STATIC_FILES = {
+    "/static/favicon.svg": ("favicon.svg", "image/svg+xml"),
     "/static/app.js": ("app.js", "application/javascript; charset=utf-8"),
     "/static/styles.css": ("styles.css", "text/css; charset=utf-8"),
 }
@@ -161,6 +162,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 max_num_fields=16,
             )
             bridge, principal, period = parse_filters(query)
+            events = parse_event_filters(query)
         except (ValueError, TypeError):
             self._error(
                 HTTPStatus.BAD_REQUEST, "查询参数无效", send_body=send_body
@@ -172,6 +174,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             bridge_filter=bridge,
             principal_filter=principal,
             period=period,
+            **events,
         )
         payload["health"] = read_health_snapshot(config.health_snapshot)
         payload["generated_at"] = _utc_now()

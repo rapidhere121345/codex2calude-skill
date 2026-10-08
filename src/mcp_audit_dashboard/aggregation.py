@@ -20,7 +20,9 @@ TOKEN_FIELDS = (
     "cache_read_tokens",
     "total_tokens",
 )
-RECENT_ROW_LIMIT = 100
+PAGE_SIZES = (10, 20, 50)
+EVENT_STATUSES = ("all", "success", "failed", "running")
+EVENT_KINDS = ("all", "inference", "admin")
 INFERENCE_TOOLS = frozenset(
     (
         "claude_once",
@@ -46,10 +48,37 @@ def parse_filters(query: dict[str, list[str]]) -> tuple[str, str, str]:
         if len(values) != 1 or values[0] not in allowed:
             raise ValueError("invalid filter")
         result.append(values[0])
-    unknown = set(query) - {"bridge", "principal", "period"}
+    unknown = set(query) - {
+        "bridge", "principal", "period", "page", "page_size",
+        "event_status", "event_kind",
+    }
     if unknown:
         raise ValueError("invalid filter")
     return result[0], result[1], result[2]
+
+
+def parse_event_filters(query: dict[str, list[str]]) -> dict[str, int | str]:
+    result = {}
+    for name, default in (
+        ("page", "1"), ("page_size", "20"),
+        ("event_status", "all"), ("event_kind", "all"),
+    ):
+        values = query.get(name, [default])
+        if len(values) != 1:
+            raise ValueError("duplicate event filter")
+        value = values[0]
+        if name in ("page", "page_size"):
+            if not value.isascii() or not value.isdecimal() or len(value) > 7:
+                raise ValueError("invalid page")
+            value = int(value)
+            if name == "page" and not 1 <= value <= 1_000_000:
+                raise ValueError("invalid page")
+            if name == "page_size" and value not in PAGE_SIZES:
+                raise ValueError("invalid page size")
+        elif value not in (EVENT_STATUSES if name == "event_status" else EVENT_KINDS):
+            raise ValueError("invalid event filter")
+        result[name] = value
+    return result
 
 
 def _cutoff(period: str, now: datetime) -> str:
@@ -64,6 +93,11 @@ def _empty_metrics() -> dict[str, object]:
     return {
         "calls": 0,
         "inference_calls": 0,
+        "inference_successes": 0,
+        "inference_failures": 0,
+        "inference_completed": 0,
+        "inference_duration_ms_known": 0,
+        "inference_duration_ms_total": 0,
         "admin_calls": 0,
         "successes": 0,
         "errors": 0,
@@ -99,11 +133,16 @@ def _safe_int(value: object) -> int | None:
 
 def _add(metrics: dict[str, object], row: dict[str, object]) -> None:
     metrics["calls"] += 1
-    if row["tool"] in INFERENCE_TOOLS:
+    inference = row["tool"] in INFERENCE_TOOLS
+    if inference:
         metrics["inference_calls"] += 1
     else:
         metrics["admin_calls"] += 1
     status = row["status"]
+    if inference and status != "running":
+        metrics["inference_completed"] += 1
+        metrics["inference_successes"] += status == "success"
+        metrics["inference_failures"] += status != "success"
     metrics["status_counts"][status] += 1
     if status == "success":
         metrics["successes"] += 1
@@ -115,10 +154,13 @@ def _add(metrics: dict[str, object], row: dict[str, object]) -> None:
     if duration is not None:
         metrics["duration_ms_known"] += 1
         metrics["duration_ms_total"] += duration
+        if inference:
+            metrics["inference_duration_ms_known"] += 1
+            metrics["inference_duration_ms_total"] += duration
     if row.get("error_category") is not None:
         metrics["error_categories"][row["error_category"]] += 1
     source = row.get("token_usage_source")
-    known = source is not None and any(
+    known = inference and source in ("claude_cli_result", "gemini_cli_result") and any(
         _safe_int(row.get(field)) is not None for field in TOKEN_FIELDS
     )
     if known:
@@ -136,6 +178,16 @@ def _serialize(metrics: dict[str, object]) -> dict[str, object]:
     return {
         "calls": metrics["calls"],
         "inference_calls": metrics["inference_calls"],
+        "inference_successes": metrics["inference_successes"],
+        "inference_failures": metrics["inference_failures"],
+        "inference_success_rate": (
+            metrics["inference_successes"] / metrics["inference_completed"]
+            if metrics["inference_completed"] else None
+        ),
+        "inference_duration_ms_average": (
+            metrics["inference_duration_ms_total"] / metrics["inference_duration_ms_known"]
+            if metrics["inference_duration_ms_known"] else None
+        ),
         "admin_calls": metrics["admin_calls"],
         "successes": metrics["successes"],
         "errors": metrics["errors"],
@@ -240,9 +292,10 @@ def _sanitized_recent(rows: Iterable[dict[str, object]]) -> list[dict[str, objec
                 "http_status": row.get("http_status"),
                 "exit_code": row.get("exit_code"),
                 "token_usage_source": row.get("token_usage_source"),
+                "tokens": {field: _safe_int(row.get(field)) for field in TOKEN_FIELDS},
         }
         )
-    return result[:RECENT_ROW_LIMIT]
+    return result
 
 
 def _reported_models(value: object) -> list[str] | None:
@@ -267,7 +320,15 @@ def aggregate_dashboard(
     principal_filter: str,
     period: str,
     now: datetime | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    event_status: str = "all",
+    event_kind: str = "all",
 ) -> dict[str, object]:
+    if (type(page) is not int or not 1 <= page <= 1_000_000
+            or type(page_size) is not int or page_size not in PAGE_SIZES
+            or event_status not in EVENT_STATUSES or event_kind not in EVENT_KINDS):
+        raise ValueError("invalid event filters")
     current = now or datetime.now(timezone.utc)
     rows: list[dict[str, object]] = []
     availability = {}
@@ -277,7 +338,10 @@ def aggregate_dashboard(
         for row in bridge_rows:
             row["bridge"] = bridge
         rows.extend(bridge_rows)
-    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    rows.sort(key=lambda row: (
+        str(row.get("created_at") or ""), row["bridge"],
+        _safe_int(row.get("id")) or 0,
+    ), reverse=True)
 
     groups: dict[tuple[str, str], dict[str, object]] = defaultdict(_empty_metrics)
     _touch_all(groups)
@@ -298,15 +362,33 @@ def aggregate_dashboard(
         for bridge in BRIDGES
         for principal in PRINCIPALS
     }
+    events = [row for row in included if (
+        event_status == "all" or row["status"] == event_status
+        or (event_status == "failed" and row["status"] not in ("success", "running"))
+    ) and (
+        event_kind == "all"
+        or (row["tool"] in INFERENCE_TOOLS) == (event_kind == "inference")
+    )]
+    total_rows = len(events)
+    total_pages = math.ceil(total_rows / page_size)
+    page = min(page, max(total_pages, 1))
+    offset = (page - 1) * page_size
     return {
         "filters": {
             "bridge": bridge_filter,
             "principal": principal_filter,
             "period": period,
+            "event_status": event_status,
+            "event_kind": event_kind,
         },
         "database_availability": availability,
         "metrics": metrics,
-        "recent_events": _sanitized_recent(included),
+        "recent_events": _sanitized_recent(events[offset:offset + page_size]),
+        "pagination": {
+            "page": page, "page_size": page_size,
+            "total_rows": total_rows, "total_pages": total_pages,
+            "has_prev": page > 1, "has_next": page < total_pages,
+        },
         "token_policy": {
             "history": "null_when_unknown",
             "inference_or_backfill": False,

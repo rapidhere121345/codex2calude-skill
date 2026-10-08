@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -102,5 +103,14 @@ def test_usage_probe_timeout_is_bounded_and_kills_process_group(
     asyncio.run(asyncio.wait_for(child(), timeout=2))
 
     pid = int(pid_file.read_text(encoding="ascii"))
+    # tmux's kill-server client can return just before its server reaps the
+    # pane process. Allow that bounded asynchronous cleanup to finish.
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)

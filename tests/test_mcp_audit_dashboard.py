@@ -14,6 +14,7 @@ from mcp_audit_dashboard.aggregation import (
     _reported_models,
     aggregate_dashboard,
     parse_filters,
+    parse_event_filters,
 )
 from mcp_audit_dashboard.config import DashboardConfig, config_from_environment
 from mcp_audit_dashboard.health import read_health_snapshot
@@ -117,6 +118,7 @@ def test_dashboard_aggregation_filters_and_unknown_tokens(tmp_path):
         "http_status",
         "exit_code",
         "token_usage_source",
+        "tokens",
     }
     assert "conversation_id" not in result["recent_events"][0]
     assert "request_id" not in result["recent_events"][0]
@@ -300,6 +302,8 @@ def test_every_route_requires_exact_owner_identity_and_strict_headers(http_serve
     assert request(http_server, owner="partner@example.invalid")[0] == 401
     assert request(http_server, path="/not-found", owner=None)[0] == 401
     assert request(http_server, path="/static/app.js", owner=None)[0] == 401
+    assert request(http_server, path="/static/favicon.svg", owner=None)[0] == 401
+    assert request(http_server, path="/static/favicon.svg")[0] == 200
     assert request(http_server, path="/healthz", owner=None)[0] == 401
     assert request(http_server, host="evil.invalid")[0] == 403
 
@@ -398,7 +402,8 @@ def test_static_assets_are_local_and_dom_safe():
     assert "insertAdjacentHTML" not in source
     assert "document.write" not in source
     assert "https://" not in source
-    assert "http://" not in source
+    # SVG's XML namespace is an identifier, not an outgoing asset request.
+    assert "http://" not in source.replace("http://www.w3.org/2000/svg", "")
 
 
 def test_aggregation_does_not_silently_truncate_at_twenty_thousand(tmp_path):
@@ -408,7 +413,9 @@ def test_aggregation_does_not_silently_truncate_at_twenty_thousand(tmp_path):
         db.executemany('INSERT INTO audit_log VALUES (?,"owner","claude_once","opus","success",1,"2026-10-09T00:00:00+00:00",NULL,NULL,NULL)', ((n,) for n in range(20005)))
     result=aggregate_dashboard({'claude':path},bridge_filter='total',principal_filter='total',period='all')
     assert result['metrics']['total:total']['calls']==20005
-    assert len(result['recent_events'])==100
+    assert len(result['recent_events'])==20
+    assert result['pagination']['total_rows']==20005
+    assert result['pagination']['total_pages']==1001
 
 
 def test_filters_have_valid_default_period():
@@ -422,3 +429,85 @@ def test_health_matches_fifteen_minute_cadence_and_preserves_readiness(tmp_path)
     result=read_health_snapshot(path,now=NOW)
     assert result['staleness']=='fresh'
     assert result['bridges']['gemini']['account_ready'] is False
+
+
+def test_pagination_covers_both_providers_with_stable_ties(tmp_path):
+    paths={name:tmp_path/(name+'.sqlite3') for name in ('claude','gemini')}
+    for bridge,path in paths.items():
+        make_database(path)
+        with sqlite3.connect(path) as db:
+            db.execute('DELETE FROM audit_log')
+            db.executemany(
+                'INSERT INTO audit_log (principal,tool,status,duration_ms,created_at) VALUES (?,?,?,?,?)',
+                [('owner',bridge+'_once','success',i,'2026-10-09T00:10:00+00:00') for i in range(61)],
+            )
+    seen=[]
+    for page in range(1,8):
+        result=aggregate_dashboard(paths,bridge_filter='total',principal_filter='total',period='all',page=page)
+        assert result['pagination']=={'page':page,'page_size':20,'total_rows':122,'total_pages':7,'has_prev':page>1,'has_next':page<7}
+        assert result['metrics']['total:total']['inference_calls']==122
+        assert result['metrics']['claude:owner']['inference_calls']==61
+        seen.extend((r['bridge'],r['duration_ms']) for r in result['recent_events'])
+    assert len(seen)==len(set(seen))==122
+    assert seen==sorted(seen,reverse=True)
+    last=aggregate_dashboard(paths,bridge_filter='total',principal_filter='total',period='all',page=999)
+    assert last['pagination']['page']==7
+    assert len(last['recent_events'])==2
+
+
+def test_event_filters_do_not_change_usage_totals(tmp_path):
+    path=tmp_path/'claude.sqlite3';make_database(path)
+    with sqlite3.connect(path) as db:
+        db.execute("INSERT INTO audit_log (principal,tool,status,created_at) VALUES ('owner','claude_once','running','2026-10-09T00:40:00+00:00')")
+        db.execute("INSERT INTO audit_log (principal,tool,status,created_at) VALUES ('owner','claude_once','timeout','2026-10-09T00:50:00+00:00')")
+    args={'database_paths':{'claude':path},'bridge_filter':'total','principal_filter':'total','period':'24h','now':NOW}
+    base=aggregate_dashboard(**args)
+    failed=aggregate_dashboard(**args,event_status='failed',event_kind='inference')
+    assert failed['metrics']==base['metrics']
+    assert {r['status'] for r in failed['recent_events']}=={'error','timeout'}
+    assert failed['pagination']['total_rows']==2
+    owner=base['metrics']['claude:owner']
+    assert owner['inference_calls']==3
+    assert owner['inference_successes']==1
+    assert owner['inference_failures']==1
+    assert owner['inference_success_rate']==.5
+    assert owner['inference_duration_ms_average']==100
+    admin=aggregate_dashboard(**args,event_kind='admin')
+    assert admin['pagination']['total_rows']==1
+    assert admin['recent_events'][0]['tool']=='claude_status'
+    running=aggregate_dashboard(**args,event_status='running')
+    assert len(running['recent_events'])==1
+    empty=aggregate_dashboard(**args,event_status='running',event_kind='admin',page=3)
+    assert empty['pagination']=={'page':1,'page_size':20,'total_rows':0,'total_pages':0,'has_prev':False,'has_next':False}
+
+
+@pytest.mark.parametrize('query',[
+    {'page':['0']},{'page':['-1']},{'page':['1.0']},{'page':['1000001']},
+    {'page':['１']},{'page':['1','2']},{'page_size':['1000']},
+    {'event_status':['error']},{'event_kind':['shell']},{'event_kind':['all','admin']},
+])
+def test_event_filter_validation(query):
+    with pytest.raises(ValueError):parse_event_filters(query)
+
+
+def test_http_pagination_and_event_filters(http_server):
+    status,_,raw=request(http_server,path='/api/dashboard?period=all&page=100&page_size=10&event_kind=inference&event_status=success')
+    payload=json.loads(raw)
+    assert status==200
+    assert payload['pagination']=={'page':1,'page_size':10,'total_rows':2,'total_pages':1,'has_prev':False,'has_next':False}
+    assert payload['metrics']['total:total']['calls']==4
+    assert payload['recent_events'][0]['tokens']['input_tokens']==11
+    assert request(http_server,path='/api/dashboard?page_size=100000')[0]==400
+    assert request(http_server,path='/api/dashboard?page=1&page=2')[0]==400
+    assert request(http_server,path='/api/dashboard?event_status=failed',owner=None)[0]==401
+
+
+def test_health_admin_rows_cannot_inflate_inference_token_coverage(tmp_path):
+    path=tmp_path/'audit.sqlite3';make_database(path)
+    with sqlite3.connect(path) as db:
+        db.execute("UPDATE audit_log SET input_tokens=8000, token_usage_source='claude_cli_result' WHERE tool='claude_status'")
+    result=aggregate_dashboard({'claude':path},bridge_filter='total',principal_filter='owner',period='24h',now=NOW)
+    metric=result['metrics']['claude:owner']
+    assert metric['token_known_coverage']==1
+    assert metric['token_known_calls']==1
+    assert metric['tokens']['input_tokens']['total']==11
