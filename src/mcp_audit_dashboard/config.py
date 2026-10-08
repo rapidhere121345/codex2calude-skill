@@ -8,6 +8,7 @@ from pathlib import Path
 DEFAULT_CLAUDE_DATABASE = Path("/var/lib/mcp-audit/claude.sqlite3")
 DEFAULT_GEMINI_DATABASE = Path("/var/lib/mcp-audit/gemini.sqlite3")
 DEFAULT_HEALTH_SNAPSHOT = Path("/var/lib/mcp-audit/health.json")
+DEFAULT_SUBSCRIPTIONS_FILE = Path("/var/lib/mcp-audit/subscriptions.json")
 DEFAULT_ALLOWED_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
@@ -19,6 +20,7 @@ class DashboardConfig:
     owner_login: str | None
     local_test_no_auth: bool = False
     allowed_hosts: tuple[str, ...] = DEFAULT_ALLOWED_HOSTS
+    subscriptions_file: Path = DEFAULT_SUBSCRIPTIONS_FILE
 
 
 def _nonempty_env(name: str) -> str | None:
@@ -45,6 +47,7 @@ def config_from_environment(
     claude_database: Path | None = None,
     gemini_database: Path | None = None,
     health_snapshot: Path | None = None,
+    subscriptions_file: Path | None = None,
 ) -> DashboardConfig:
     owner_login = _nonempty_env("MCP_AUDIT_OWNER_LOGIN")
     test_flag = _nonempty_env("MCP_AUDIT_LOCAL_TEST_NO_AUTH")
@@ -77,6 +80,11 @@ def config_from_environment(
             or DEFAULT_HEALTH_SNAPSHOT
         ),
         static_dir=static_dir,
+        subscriptions_file=Path(
+            _nonempty_env("MCP_AUDIT_SUBSCRIPTIONS_FILE")
+            or subscriptions_file
+            or DEFAULT_SUBSCRIPTIONS_FILE
+        ),
         owner_login=owner_login,
         local_test_no_auth=explicit_test,
         allowed_hosts=_hosts(

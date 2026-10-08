@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="cached sanitized health JSON snapshot",
     )
     parser.add_argument(
+        "--subscriptions-file",
+        type=Path,
+        help="owner-maintained subscription dates JSON (read only)",
+    )
+    parser.add_argument(
         "--local-test-no-auth",
         action="store_true",
         help="explicit no-auth mode; loopback TCP only, never production",
@@ -61,6 +66,7 @@ def main() -> int:
         claude_database=args.claude_db,
         gemini_database=args.gemini_db,
         health_snapshot=args.health_snapshot,
+        subscriptions_file=args.subscriptions_file,
     )
     if args.unix_socket is not None and config.local_test_no_auth:
         raise SystemExit("no-auth test mode cannot use the production UNIX socket")

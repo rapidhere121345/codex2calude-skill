@@ -82,7 +82,7 @@
 - quota 可以包含 `five_hour`、`seven_day` 两个同类嵌套对象；
 - 面板将 20 分钟内视为 fresh，30 分钟内为 warning，更旧为 stale；无有效 `observed_at` 为 unknown。
 
-## 审计数据与令牌覆盖
+## 审计数据与 token 覆盖
 
 生产默认读取父级生成的脱敏、被动刷新快照（建议每 60 秒一次）：
 
@@ -116,11 +116,30 @@ CREATE TABLE audit_log (
 );
 ```
 
-所有 token 和 `reported_models_json` 字段均 nullable，历史未知值保持 NULL。字段只在 CLI 成功结果明确给出数值/模型名时写入；token 来源固定为 `claude_cli_result` 或 `gemini_cli_result`。API 的每类令牌都会返回 known calls；没有覆盖时总量为 `null`，不会补零或估算。
+所有 token 和 `reported_models_json` 字段均 nullable，历史未知值保持 NULL。字段只在 CLI 成功结果明确给出数值/模型名时写入；token 来源固定为 `claude_cli_result` 或 `gemini_cli_result`。API 的每类 token 都会返回 known calls；没有覆盖时总量为 `null`，不会补零或估算。
 
 用量卡片把 `once/start/continue` 归为推理调用，把 `status/list/export/close` 等归为状态/管理调用；token 覆盖率分母只使用推理调用，避免 15 分钟健康监控稀释或夸大实际用量。最近记录中 `model` 是配置/逻辑模型，`reported_models_json` 是 CLI 明确上报的模型；后者缺失时显示“未上报/未知”，不会把配置值伪装成实际值。
 
 如无法给 `mcp-audit` 只读 DB 权限，优先由父级生成同 schema 的脱敏审计快照；不要放宽 DB 写权限。
+
+## 订阅到期与续费日期
+
+两个账号卡片分别显示订阅日期和剩余天数，7 天内提醒。`expires` 表示已确认的到期日，`renews` 表示下次续费日；过了续费日期只提示核对账单，不推断账号已停用。日期按北京时间的日历天计算，不使用浏览器或 VPS 的默认时区。
+
+当前 CLI 的状态输出未提供可靠的订阅结束日期：Claude `auth status --json` 返回订阅类型；agy `/usage` 返回额度重置时间，`/credits` 返回余额。订阅开通时间、OAuth 登录有效期、额度窗口都不能代替订阅日期。不要据此每月自动推算。
+
+面板只读 `/var/lib/mcp-audit/subscriptions.json`，配置名为 `MCP_AUDIT_SUBSCRIPTIONS_FILE`，也可用 `--subscriptions-file` 指定。该文件应由管理员维护为 `root:mcp-audit 0640`，位于现有的 `root:mcp-audit 0750` 目录内，通过临时文件原子替换。只保存经账单页面确认的日期；修改后刷新页面即可，无需重启服务。下面是**格式示例，不是真实账号日期**：
+
+```json
+{
+  "claude": {"date": "2026-12-01", "kind": "renews"},
+  "gemini": null
+}
+```
+
+字段来源固定显示为“手动记录”；不存在的文件或 `null` 表示暂未取得，非法日期、其他日期类型和无法读取的文件不产生倒计时。响应只包含经过校验的日期、固定标签和剩余天数，不返回文件路径或任意嵌套内容。这份资料独立于健康快照，即使状态采集暂时失败，也能显示已确认的订阅日期。
+
+日期只能经服务器管理更新；网页保持 owner 专用和只读，不新增账号接口、网络请求、支付权限或写入端点。账单可在 [Claude 官方账单说明](https://support.claude.com/en/articles/8325618)、[Apple 订阅设置](https://support.apple.com/guide/iphone/see-your-purchases-and-subscriptions-iph4e3e7324f/ios) 或 [Google One 会员设置](https://support.google.com/googleone/answer/9003633?hl=en&co=GENIE.Platform%3DDesktop) 对应的订阅平台确认。
 
 ## 本地测试
 
@@ -130,6 +149,7 @@ cd /data/repo/codex2calude-skill
   tests/test_mcp_audit_dashboard.py -q
 
 MCP_AUDIT_LOCAL_TEST_NO_AUTH=1 \
+MCP_AUDIT_ALLOWED_HOSTS=127.0.0.1:8765 \
 MCP_AUDIT_CLAUDE_DB=/tmp/claude.sqlite3 \
 MCP_AUDIT_GEMINI_DB=/tmp/gemini.sqlite3 \
 MCP_AUDIT_HEALTH_SNAPSHOT=/tmp/health.json \
@@ -220,7 +240,7 @@ MCP_AUDIT_HEALTH_SNAPSHOT=/tmp/health.json \
 - **账户 suspension/IP 风险**：面板本身不触发 provider 请求或探测；仍需父级审查 VPS IP、服务条款和账户使用形态。这是部署阻断项。
 - **Tailscale/TLS 边界**：正确配置 Serve 时它剥离外部身份头并注入认证身份。若 Tailscale daemon 权限、版本或 header 行为不符合前提，必须停止部署。
 - **共享数据权限错误**：过宽 ACL 或未来 DB schema 变更可能让只读用户看到更多字段；上线前必须复核实际文件模式，优先改用父级脱敏快照。
-- **令牌覆盖不完整**：旧历史和未暴露 usage 的 CLI 结果保持 NULL；覆盖率是唯一诚实指标，不能把面板总量当作账户计费总量。
+- **token 覆盖不完整**：旧历史和未暴露 usage 的 CLI 结果保持 NULL；覆盖率是唯一诚实指标，不能把面板总量当作账户计费总量。
 
 采集器读取原始 WAL 数据库时暂用对应 bridge 账号创建 SQLite 锁文件，防止 root 所有的锁阻碍业务写入。快照 unit 仅为这两个 state 目录及输出目录允许文件系统写入；源连接始终 `mode=ro` / `query_only`。网页 unit 不具备这些写权限。
 
@@ -246,3 +266,5 @@ Gemini 额度来自官方 `agy -p /usage --output-format json` 的 `command.data
 所有可见文案统一为 `token`，技术诊断收起在“查看详情”中；浏览器标签图标也由同一身份保护的本地路径提供。为稳定现有测试，CLI 测试替身先消费 stdin，再输出用于验证的结果；tmux 清理测试对异步回收保留 1 秒有界等待，未改动生产 CLI 执行逻辑。
 
 最终验证：`.venv/bin/python -m pytest -q` 为 387 passed；JavaScript 语法及 `git diff --check` 通过。
+
+订阅日期增量验证（2026-10-09）：全套 408 passed；三轮真实 Chrome 检查覆盖 PC、360px 手机暗色和生产 HTTPS。验证了日期类型、7 天边界、北京时间跨日、过期续费、缺失健康数据、无日期与非法日期，页面无横向溢出或控制台错误。生产仍通过精确 owner 身份、root UNIX peer 和两服务账号禁止访问测试。当前两个账号未取得可靠账单日期，因此未向生产填入测试日期。

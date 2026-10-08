@@ -360,6 +360,15 @@ main {
 .status-error { color: var(--bad); background: var(--bad-soft); }
 .status-neutral { color: var(--muted); background: color-mix(in srgb, var(--muted) 10%, transparent); }
 
+.subscription-panel { margin: 15px 0; padding: 13px 14px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(120deg, var(--provider-soft), transparent), var(--panel-solid); }
+.subscription-heading, .subscription-date-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 7px 12px; }
+.subscription-heading h4 { margin: 0; color: var(--muted); font-size: 12px; font-weight: 650; }
+.subscription-source { color: var(--muted); font-size: 11px; }
+.subscription-date-row { margin-top: 8px; }
+.subscription-date { font-size: 23px; font-weight: 720; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.subscription-panel .metric-secondary { margin: 7px 0 0; font-size: 11px; }
+.subscription-empty { margin: 7px 0 0; font-size: 15px; font-weight: 650; }
+
 .quota-block { margin-top: 12px; }
 .quota-block h4 { margin: 0 0 8px; font-size: 13px; }
 .quota-item { margin-bottom: 11px; }

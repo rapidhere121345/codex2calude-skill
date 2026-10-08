@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from .aggregation import aggregate_dashboard, parse_event_filters, parse_filters
 from .config import DashboardConfig
 from .health import read_health_snapshot
+from .subscriptions import read_subscriptions
 
 
 OWNER_LOGIN_HEADER = "Tailscale-User-Login"
@@ -177,6 +178,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             **events,
         )
         payload["health"] = read_health_snapshot(config.health_snapshot)
+        payload["subscriptions"] = read_subscriptions(config.subscriptions_file)
         payload["generated_at"] = _utc_now()
         payload["read_only"] = True
         self._json(HTTPStatus.OK, payload, send_body=send_body)

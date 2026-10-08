@@ -252,6 +252,10 @@ def test_environment_no_auth_flag_also_cannot_select_unix_socket(
 @pytest.fixture()
 def http_server(tmp_path):
     make_database(tmp_path / "claude.sqlite3")
+    subscriptions = tmp_path / "subscriptions.json"
+    subscriptions.write_text(json.dumps({
+        "claude": {"date": "2026-10-12", "kind": "renews", "secret": "OMIT"},
+    }))
     config = DashboardConfig(
         database_paths={
             "claude": tmp_path / "claude.sqlite3",
@@ -261,6 +265,7 @@ def http_server(tmp_path):
         static_dir=Path(__file__).parents[1] / "src/mcp_audit_dashboard/static",
         owner_login="owner@example.invalid",
         allowed_hosts=("127.0.0.1",),
+        subscriptions_file=subscriptions,
     )
     DashboardRequestHandler.dashboard_config = config
     server = LoopbackDashboardServer(
@@ -305,6 +310,8 @@ def test_every_route_requires_exact_owner_identity_and_strict_headers(http_serve
     assert request(http_server, path="/static/favicon.svg", owner=None)[0] == 401
     assert request(http_server, path="/static/favicon.svg")[0] == 200
     assert request(http_server, path="/healthz", owner=None)[0] == 401
+    assert request(http_server, path="/api/dashboard", owner=None)[0] == 401
+    assert request(http_server, path="/api/dashboard", owner="partner@example.invalid")[0] == 401
     assert request(http_server, host="evil.invalid")[0] == 403
 
     status, headers, body = request(http_server)
@@ -323,6 +330,9 @@ def test_every_route_requires_exact_owner_identity_and_strict_headers(http_serve
     assert payload["metrics"]["claude:owner"]["inference_calls"] == 1
     assert payload["metrics"]["claude:owner"]["admin_calls"] == 1
     assert payload["health"]["source"] == "cached_file_only"
+    assert payload["subscriptions"]["claude"]["date"] == "2026-10-12"
+    assert payload["subscriptions"]["claude"]["kind"] == "renews"
+    assert "OMIT" not in body.decode()
 
     status, _, body = request(http_server, path="/api/dashboard?bridge=evil")
     payload = json.loads(body)

@@ -296,18 +296,50 @@ function healthTechnical(parent, bridge, account) {
   ]);
 }
 
-function healthCard(provider, bridge) {
+function subscriptionPanel(parent, subscription) {
+  const block = node(parent, "div", "subscription-panel");
+  const configured = subscription?.configured === true;
+  const renewing = subscription?.kind === "renews";
+  const heading = node(block, "div", "subscription-heading");
+  node(heading, "h4", "", configured && renewing ? "下次续费" : "订阅到期");
+  if (!configured) {
+    const needsCheck = subscription?.reason === "invalid" || subscription?.reason === "unavailable";
+    node(block, "p", "subscription-empty", needsCheck ? "日期待核对" : "暂未取得");
+    node(block, "p", "metric-secondary", needsCheck ? "请检查订阅日期记录。" : "在订阅平台确认日期后，可记录并显示剩余天数。");
+    return;
+  }
+  node(heading, "span", "subscription-source", "手动记录");
+  const line = node(block, "div", "subscription-date-row");
+  const date = node(line, "time", "subscription-date", subscription.date.replaceAll("-", "."));
+  date.dateTime = subscription.date;
+  const days = subscription.days_remaining;
+  const state = subscription.state;
+  let label = `还有 ${count(days)} 天`;
+  if (state === "today") label = renewing ? "今天续费" : "今天到期";
+  else if (state === "past") label = renewing ? "待确认续费" : "已过记录日期";
+  const status = state === "scheduled" ? "neutral" : "warning";
+  node(line, "span", `status status-${status}`, label);
+  node(block, "p", "metric-secondary", state === "past"
+    ? "请核对最新账单并更新日期，账号状态以实际监测为准。"
+    : "按北京时间计算 · 以官方账单为准");
+}
+
+function healthCard(provider, bridge, subscription) {
   const card = node(elements.health, "article", `health-card ${provider}`);
   const name = node(card, "div", "provider-name");
   node(name, "span", "provider-glyph", provider === "claude" ? "C" : "G");
   node(name, "h3", "", provider === "claude" ? "Claude" : "Gemini");
 
   const readiness = node(card, "div", "readiness-row");
-  addStatus(readiness, bridge.account_ready, "账号可用", "账号不可用");
-  addStatus(readiness, bridge.probe_ok, "连接正常", "连接失败");
+  if (Object.keys(bridge).length) {
+    addStatus(readiness, bridge.account_ready, "账号可用", "账号不可用");
+    addStatus(readiness, bridge.probe_ok, "连接正常", "连接失败");
+  } else node(readiness, "span", "status status-neutral", "等待状态更新");
   if (bridge.error_category) node(readiness, "span", "status status-warning", failureReason({error_category: bridge.error_category, status: "error"}));
   if (bridge.checked_at) node(card, "p", "metric-secondary", `检查：${timeLabel(bridge.checked_at)}（${localRelative(bridge.checked_at)}）`);
   if (isNumber(bridge.latency_ms)) node(card, "p", "metric-secondary", `响应：${duration(bridge.latency_ms)}`);
+
+  subscriptionPanel(card, subscription);
 
   const account = bridge.account || {};
   const quota = account.quota || {};
@@ -327,10 +359,8 @@ function healthCard(provider, bridge) {
 function renderHealth(payload) {
   clear(elements.health);
   const bridges = payload.health && payload.health.bridges ? payload.health.bridges : {};
-  if (bridges.claude) healthCard("claude", bridges.claude);
-  if (bridges.gemini) healthCard("gemini", bridges.gemini);
-  if (!bridges.claude || !bridges.gemini) {
-    node(elements.health, "p", "empty-message", "部分服务尚未取得状态，请稍后查看。");
+  for (const provider of ["claude", "gemini"]) {
+    healthCard(provider, bridges[provider] || {}, payload.subscriptions?.[provider]);
   }
 
   clear(elements.system);
