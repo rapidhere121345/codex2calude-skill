@@ -11,7 +11,7 @@ import re
 
 DEFAULT_MODEL = "auto"
 REASONING_EFFORTS = frozenset(("low", "medium", "high", "max"))
-DEFAULT_PRINCIPALS = ("owner", "partner")
+DEFAULT_PRINCIPALS = ("owner", "partner", "partner2")
 DEFAULT_REQUIRED_CLI_VERSION = (1, 2, 14)
 NUL_BYTE = "␀"  # Logical NUL marker; validate before ever creating a real NUL.
 _PRINCIPAL_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
@@ -155,7 +155,7 @@ def _models(raw: str | None) -> dict[str, ModelPolicy]:
 
 def _principals(raw: str | None) -> tuple[str, ...]:
     values = tuple(
-        item.strip() for item in (raw or "owner,partner").split(",") if item.strip()
+        item.strip() for item in (raw or "owner,partner,partner2").split(",") if item.strip()
     )
     if not values or not all(_PRINCIPAL_RE.fullmatch(value) for value in values):
         raise ConfigurationError("invalid GEMINI_MCP_PRINCIPALS")

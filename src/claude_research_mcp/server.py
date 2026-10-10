@@ -68,7 +68,7 @@ from .usage import (
 
 
 INSTRUCTIONS = (
-    "Private owner/partner bridge over a shared Claude subscription. Use one "
+    "Private owner/partner/partner2 bridge over a shared Claude subscription. Use one "
     "session per logical task; list by title to recover conversation_id, export "
     "to review history, and pass conversation_id to continue. No shell, files, "
     "browser control, or arbitrary commands. Calls may queue; verify important "

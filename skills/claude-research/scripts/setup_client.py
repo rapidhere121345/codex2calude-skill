@@ -53,7 +53,7 @@ LEGACY_TOOLS = (
     "claude_continue",
     "claude_close",
 )
-PRINCIPALS = ("owner", "partner")
+PRINCIPALS = ("owner", "partner", "partner2")
 FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{43}$")
 RECONNECT_PROXY = Path(__file__).resolve().parent / "mcp_ssh_reconnect.py"
 

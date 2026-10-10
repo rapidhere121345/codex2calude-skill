@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-_PRINCIPALS = frozenset(("owner", "partner"))
+_PRINCIPALS = frozenset(("owner", "partner", "partner2"))
 _UUIDv4_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-"
     r"[0-9a-f]{12}$"

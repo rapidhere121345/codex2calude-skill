@@ -464,6 +464,7 @@ details.technical[open] summary::after { content: "−"; }
 }
 
 @media (min-width: 900px) {
+  .principal-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .dashboard-shell { display: grid; grid-template-columns: 82px minmax(0, 1fr); }
   .section-rail {
     grid-template-columns: 1fr;
@@ -522,6 +523,7 @@ progress { --provider-color: var(--focus); }
 .claude progress { --provider-color: var(--claude); }
 .gemini progress { --provider-color: var(--gemini); }
 @media (min-width: 900px) {
+  .principal-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .app-header { display: flex; }
   .header-actions { display: flex; align-items: center; gap: 20px; }
   .control-dock { margin-inline: clamp(16px, 4vw, 48px); }

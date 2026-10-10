@@ -248,7 +248,7 @@ def test_five_tools_once_start_continue_close_and_principal_isolation(tmp_path):
     app = create_app(settings)
     assert [tool.name for tool in asyncio.run(app.list_tools())] == TOOLS
     assert len(INSTRUCTIONS) <= 512
-    for phrase in ("owner/partner", "shared Claude subscription", "one session", "conversation_id", "queue", "verify"):
+    for phrase in ("owner/partner/partner2", "shared Claude subscription", "one session", "conversation_id", "queue", "verify"):
         assert phrase in INSTRUCTIONS
 
     once = asyncio.run(get_tool(app, "claude_once")("once secret prompt", model="opus", use_web=True))

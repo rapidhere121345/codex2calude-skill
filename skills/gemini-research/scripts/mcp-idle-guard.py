@@ -27,6 +27,7 @@ async def run(command, idle_seconds=IDLE_SECONDS):
         stderr=None, limit=LIMIT, start_new_session=True,
     )
     pending = set()
+    pending_since = {}
     last_activity = time.monotonic()
     stop = asyncio.Event()
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
@@ -45,11 +46,14 @@ async def run(command, idle_seconds=IDLE_SECONDS):
         if inbound and method and method != 'ping':
             last_activity = time.monotonic()
             if 'id' in message:
-                pending.add(json.dumps(message['id'], sort_keys=True))
+                key = json.dumps(message['id'], sort_keys=True)
+                pending.add(key)
+                pending_since[key] = time.monotonic()
         elif not inbound and 'id' in message and method is None:
             key = json.dumps(message['id'], sort_keys=True)
             if key in pending:
                 pending.discard(key)
+                pending_since.pop(key, None)
                 last_activity = time.monotonic()
 
     async def upstream():
@@ -67,8 +71,18 @@ async def run(command, idle_seconds=IDLE_SECONDS):
     async def idle():
         while True:
             await asyncio.sleep(min(idle_seconds / 10, 1.0))
-            if not pending and time.monotonic() - last_activity >= idle_seconds:
-                print('mcp-idle-guard: idle timeout; releasing worker', file=sys.stderr, flush=True)
+            now = time.monotonic()
+            # A lost response must not pin the worker forever. Give an active
+            # call at least one second in tests and one full idle window in
+            # production, then treat it as stale and release the worker.
+            pending_timeout = max(idle_seconds, 1.0)
+            stale = {key for key, started in pending_since.items() if now - started >= pending_timeout}
+            if stale:
+                pending.difference_update(stale)
+                for key in stale:
+                    pending_since.pop(key, None)
+            if not pending and now - last_activity >= idle_seconds:
+                print(f'mcp-idle-guard: idle timeout; releasing worker (expired_pending={len(stale)})', file=sys.stderr, flush=True)
                 return
 
     tasks = [asyncio.create_task(f()) for f in (upstream, downstream, idle, stop.wait)]
