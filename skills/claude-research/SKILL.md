@@ -111,8 +111,9 @@ the current SSH principal. Verification must expose exactly these seven tools:
   the model during `claude_continue`.
 - Set `use_web=true` when current external research is needed. Set it to false
   for reasoning over material already in the prompt.
-- Research calls default to 50 Claude turns and a 900-second process timeout;
-  callers can request lower bounds for short tasks.
+- For normal research, omit `max_turns` and `timeout_seconds` so the bridge
+  uses its 50-turn and 900-second defaults. Pass either field explicitly only
+  for a deliberately short task, a strict deadline, or targeted debugging.
 - Keep each prompt self-contained enough for Claude to act, but do not send
   credentials, private keys, tokens, or unrelated private context.
 - Calls share one Claude subscription and may queue. Avoid redundant retries;

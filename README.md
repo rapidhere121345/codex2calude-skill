@@ -105,6 +105,9 @@ not a native `agy` limit. Native conversation IDs stay on
 the VPS. Successful task turns are stored privately for export, separate from
 the text-free audit records.
 
+Normal callers should omit `max_turns` and `timeout_seconds`; explicit values
+are reserved for short tasks, strict deadlines, or debugging.
+
 Authenticate only on the VPS by running `agy` as `geminimcp`, selecting Google
 OAuth, and completing the [official remote SSH authorization
 flow](https://antigravity.google/docs/cli/install/#remote-ssh-oauth-flow).
