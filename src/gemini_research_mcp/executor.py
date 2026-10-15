@@ -16,8 +16,9 @@ from .diagnostics import attach_raw_error
 
 # Web research commonly needs more than eight search/fetch rounds. This remains
 # a per-invocation safety bound, not a bridge call quota.
-DEFAULT_MAX_TURNS = 20
-DEFAULT_TIMEOUT_SECONDS = 600
+DEFAULT_MAX_TURNS = 50
+# Long web research needs time for several search/fetch rounds.
+DEFAULT_TIMEOUT_SECONDS = 900
 MIN_MAX_TURNS = 1
 MAX_MAX_TURNS = 100
 MIN_TIMEOUT_SECONDS = 1

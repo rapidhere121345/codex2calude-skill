@@ -255,7 +255,7 @@ def test_five_tools_once_start_continue_close_and_principal_isolation(tmp_path):
     assert once["actual_models"] == ["claude-haiku-4-5", "claude-opus-5"]
     assert once["model_usage"][1] == {"model": "claude-opus-5", "input_tokens": 11, "output_tokens": 22}
     once_argv = Path(str(settings.claude_bin) + ".argv").read_text().splitlines()
-    assert once_argv[once_argv.index("--max-turns") + 1] == "20"
+    assert once_argv[once_argv.index("--max-turns") + 1] == "50"
     assert "once secret prompt" not in Path(str(settings.claude_bin) + ".argv").read_text()
     assert Path(str(settings.claude_bin) + ".stdin").read_text() == "once secret prompt"
 

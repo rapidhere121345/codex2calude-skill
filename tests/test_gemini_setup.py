@@ -191,7 +191,7 @@ args = [
 {args}
 ]
 startup_timeout_sec = 20
-tool_timeout_sec = 720
+tool_timeout_sec = 900
 
 [notice]
 hide = true
@@ -245,7 +245,7 @@ def preinstall_direct_gemini_config(
         args,
         "]",
         "startup_timeout_sec = 20",
-        "tool_timeout_sec = 720",
+        "tool_timeout_sec = 900",
         "enabled_tools = [",
         tools,
         "]",
@@ -353,7 +353,7 @@ def test_partner_import_adds_gemini_without_replacing_claude(
             f"claudemcp@{setup.HOST}",
         ],
         "startup_timeout_sec": 20,
-        "tool_timeout_sec": 720,
+        "tool_timeout_sec": 900,
     }
     assert parsed["mcp_servers"]["gemini_research"] == setup.expected_config(
         key_path, known_hosts_path

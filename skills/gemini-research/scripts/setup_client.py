@@ -225,7 +225,7 @@ def expected_config(
             ),
         ],
         "startup_timeout_sec": 60,
-        "tool_timeout_sec": 720,
+        "tool_timeout_sec": 900,
         "enabled_tools": list(tools),
     }
 
@@ -247,7 +247,7 @@ def direct_config(
             ssh_port=ssh_port,
         ),
         "startup_timeout_sec": 20,
-        "tool_timeout_sec": 720,
+        "tool_timeout_sec": 900,
         "enabled_tools": list(tools),
     }
 

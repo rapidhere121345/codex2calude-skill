@@ -78,7 +78,7 @@ environment.
 
 After successful setup verification, make one small acceptance request through
 the native `gemini_once` MCP tool. Pass `model="pro"`,
-`use_web=false`, and `timeout_seconds=120`, with the prompt
+`use_web=false`, and `timeout_seconds=900`, with the prompt
 `只回复 GEMINI_PRO_ACCEPTANCE_OK。` Check the actual response before reporting
 installation as accepted. If the host has not loaded the newly registered
 tools yet, wait for that refresh; setup's read-only `gemini_status`
@@ -187,7 +187,9 @@ billing when the user expects their personal plan quota.
 is disabled for production research. Concrete model usage is unknown when the
 CLI does not report it. The confirmed highest Pro catalogue entry is
 `gemini-3.1-pro-high`, with `--effort high`. Timeout and output limits are enforced;
-`max_turns` is retained for MCP compatibility and is not enforced by `agy`.
+Research calls default to 50 turns and 900 seconds. `max_turns` is retained
+for MCP compatibility and is not enforced by `agy`; the 900-second process
+timeout is enforced by the bridge.
 Bridge exports contain successful user/assistant task turns stored on the VPS.
 
 Quota exhaustion stops the task. The deployment sets `useG1Credits=false`

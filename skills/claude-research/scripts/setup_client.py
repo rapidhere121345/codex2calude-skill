@@ -203,7 +203,7 @@ def expected_config(
         "command": "python3",
         "args": [str(RECONNECT_PROXY), "ssh", "-F", "none", *ssh_args(key_path, known_hosts_path, ssh_user=ssh_user)],
         "startup_timeout_sec": 60,
-        "tool_timeout_sec": 720,
+        "tool_timeout_sec": 900,
         "enabled_tools": list(tools),
     }
 
@@ -219,7 +219,7 @@ def direct_config(
         "command": "ssh",
         "args": ssh_args(key_path, known_hosts_path, ssh_user=ssh_user),
         "startup_timeout_sec": 20,
-        "tool_timeout_sec": 720,
+        "tool_timeout_sec": 900,
         "enabled_tools": list(tools),
     }
 

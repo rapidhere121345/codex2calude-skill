@@ -99,8 +99,9 @@ permissions nor tool-context pruning. Do not let `agy` spawn or delegate other
 AI agents or tasks, or use commands to switch AI CLIs/models to bypass the VPS
 model policy; collaboration remains with the outer Codex native subagents. Ordinary
 prompts use official NDJSON stdin with slash expansion disabled. Timeout and
-output bounds are enforced by the bridge; `max_turns` is retained for interface
-compatibility and is not a native `agy` limit. Native conversation IDs stay on
+output bounds are enforced by the bridge. Research calls default to 50 turns
+and 900 seconds; `max_turns` is retained for interface compatibility and is
+not a native `agy` limit. Native conversation IDs stay on
 the VPS. Successful task turns are stored privately for export, separate from
 the text-free audit records.
 
