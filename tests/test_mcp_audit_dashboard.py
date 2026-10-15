@@ -26,13 +26,16 @@ from mcp_audit_dashboard.http_server import (
 from mcp_audit_dashboard.__main__ import main
 
 
-NOW = datetime(2026, 10, 9, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc).replace(microsecond=0)
 
 
 def make_database(path: Path) -> None:
+    recent_inference = (NOW - timedelta(minutes=50)).isoformat()
+    recent_error = (NOW - timedelta(minutes=40)).isoformat()
+    recent_status = (NOW - timedelta(minutes=30)).isoformat()
     with sqlite3.connect(path) as connection:
         connection.executescript(
-            """
+            f"""
             CREATE TABLE audit_log (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               principal TEXT NOT NULL,
@@ -61,14 +64,14 @@ def make_database(path: Path) -> None:
               error_category, input_tokens, output_tokens, token_usage_source
             ) VALUES
               ('owner', 'claude_once', 'opus', 'success', 100,
-               '2026-10-09T00:10:00+00:00', NULL, 11, 5, 'claude_cli_result'),
+               '{recent_inference}', NULL, 11, 5, 'claude_cli_result'),
               ('partner', 'gemini_once', 'pro', 'error', 300,
-               '2026-10-09T00:20:00+00:00', 'runtime', NULL, NULL, NULL),
+               '{recent_error}', 'runtime', NULL, NULL, NULL),
               ('owner', 'claude_once', 'opus', 'success', 200,
                '2026-08-01T00:00:00+00:00', NULL, 999, 999,
                'claude_cli_result'),
               ('owner', 'claude_status', 'opus', 'success', 20,
-               '2026-10-09T00:30:00+00:00', NULL, NULL, NULL, NULL);
+               '{recent_status}', NULL, NULL, NULL, NULL);
             """
         )
 
@@ -468,8 +471,8 @@ def test_pagination_covers_both_providers_with_stable_ties(tmp_path):
 def test_event_filters_do_not_change_usage_totals(tmp_path):
     path=tmp_path/'claude.sqlite3';make_database(path)
     with sqlite3.connect(path) as db:
-        db.execute("INSERT INTO audit_log (principal,tool,status,created_at) VALUES ('owner','claude_once','running','2026-10-09T00:40:00+00:00')")
-        db.execute("INSERT INTO audit_log (principal,tool,status,created_at) VALUES ('owner','claude_once','timeout','2026-10-09T00:50:00+00:00')")
+        db.execute("INSERT INTO audit_log (principal,tool,status,created_at) VALUES ('owner','claude_once','running',?)", ((NOW - timedelta(minutes=20)).isoformat(),))
+        db.execute("INSERT INTO audit_log (principal,tool,status,created_at) VALUES ('owner','claude_once','timeout',?)", ((NOW - timedelta(minutes=10)).isoformat(),))
     args={'database_paths':{'claude':path},'bridge_filter':'total','principal_filter':'total','period':'24h','now':NOW}
     base=aggregate_dashboard(**args)
     failed=aggregate_dashboard(**args,event_status='failed',event_kind='inference')

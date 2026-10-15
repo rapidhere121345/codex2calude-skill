@@ -95,6 +95,8 @@ _ERROR_STATUS_FIELDS = (
     "error.status_code",
     "error.statusCode",
     "error.http_status",
+    # Claude Code emits this top-level field for subscription/OAuth failures.
+    "api_error_status",
 )
 _MAX_ERROR_JSON_CHARS = 16_384
 _MAX_ERROR_TEXT_CHARS = 2_048
@@ -127,6 +129,14 @@ _ERROR_TYPES: dict[str, str] = {
 # They select an enum only; no source text, numbers, paths, or identifiers are
 # returned.  More specific evidence takes precedence over generic API errors.
 _ERROR_TEXT_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Claude Code returns this as a sanitized result when the organization has
+    # disabled subscription OAuth. Keep it as a permission failure so callers
+    # can distinguish it from quota exhaustion or a transient runtime error.
+    ((
+        "oauth_not_allowed_for_organization",
+        "organization has disabled claude subscription access",
+        "use an anthropic api key instead",
+    ), "permission"),
     (("authentication_error", "authentication error", "oauth token expired"), "auth"),
     (("rate limit reached", "rate limit exceeded", "you've hit your limit", "usage limit reached"), "rate_limit"),
     (("model not found", "model is unavailable", "model is not available"), "model_unavailable"),
@@ -140,6 +150,11 @@ _ERROR_MESSAGES = {phrase: category for phrases, category in _ERROR_TEXT_RULES f
 # Bounded, exact stderr fragments.  They classify diagnostics without echoing
 # them.  Unknown or ambiguous output remains unknown.
 _STDERR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    ((
+        "oauth_not_allowed_for_organization",
+        "organization has disabled claude subscription access",
+        "use an anthropic api key instead",
+    ), "permission"),
     (("not logged in", "authentication error", "authentication failed", "invalid api key", "login required"), "auth"),
     (("rate limit error", "rate limit exceeded", "rate_limit_error"), "rate_limit"),
     (("model not found", "model is unavailable", "model is not available", "model is unsupported", "model is not supported"), "model_unavailable"),

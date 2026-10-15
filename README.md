@@ -437,9 +437,12 @@ sudo install -d -m 0755 -o root -g root /etc/ssh/authorized_keys
 sudo install -m 0644 -o root -g root examples/authorized_keys /etc/ssh/authorized_keys/claude-mcp
 sudo install -m 0644 -o root -g root deploy/sshd_config.claude-mcp /etc/ssh/sshd_config.claude-mcp
 sudo install -m 0644 -o root -g root deploy/claude-mcp-sshd.service /etc/systemd/system/claude-mcp-sshd.service
+sudo install -d -m 0755 -o root -g root /etc/systemd/system/gemini-mcp-sshd.service.d
+sudo install -m 0644 -o root -g root deploy/gemini-mcp-runtime-dir.conf /etc/systemd/system/gemini-mcp-sshd.service.d/runtime-dir.conf
 sudo /usr/sbin/sshd -t -f /etc/ssh/sshd_config.claude-mcp
 sudo systemctl daemon-reload
 sudo systemctl enable --now claude-mcp-sshd.service
+sudo systemctl enable --now gemini-mcp-sshd.service
 ```
 
 Then allow TCP 22022 in UFW and in the Lightsail networking firewall. Do not

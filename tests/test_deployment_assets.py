@@ -65,6 +65,7 @@ def test_sshd_service_has_tested_filesystem_and_namespace_hardening() -> None:
     unit = (ROOT / "deploy" / "claude-mcp-sshd.service").read_text()
 
     expected = (
+        "ExecStartPre=/usr/bin/install -d -m 0755 -o root -g root /run/sshd",
         "UMask=0077",
         "PrivateTmp=yes",
         "PrivateDevices=yes",
@@ -77,6 +78,12 @@ def test_sshd_service_has_tested_filesystem_and_namespace_hardening() -> None:
     )
     for directive in expected:
         assert directive in unit
+
+
+def test_gemini_sshd_runtime_dropin_creates_privilege_separation_directory() -> None:
+    dropin = (ROOT / "deploy" / "gemini-mcp-runtime-dir.conf").read_text()
+
+    assert "ExecStartPre=/usr/bin/install -d -m 0755 -o root -g root /run/sshd" in dropin
 
 
 def test_authorized_key_example_contains_placeholders_only() -> None:

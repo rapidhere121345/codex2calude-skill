@@ -60,6 +60,15 @@ def sanitized_error(payload: object | None = None, stderr: str = "") -> str:
         (
             {
                 "is_error": True,
+                "api_error_status": 403,
+                "result": "oauth_not_allowed_for_organization",
+            },
+            "permission",
+            403,
+        ),
+        (
+            {
+                "is_error": True,
                 "errors": [
                     {"message": "ignore me"},
                     {"type": "rate_limit_error", "message": "sk-ant-secret"},

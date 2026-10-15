@@ -90,6 +90,36 @@ def _safe_raw_log_saved(value: object) -> int | None:
     return int(value) if isinstance(value, bool) else None
 
 
+def recent_api_auth_failure(
+    database_path: Path, *, max_age_seconds: int = 900
+) -> dict[str, object] | None:
+    """Return a bounded recent API auth failure for truthful health reporting."""
+
+    if max_age_seconds < 1:
+        return None
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)
+    with transaction(database_path) as db:
+        row = db.execute(
+            "SELECT error_category, http_status, created_at "
+            "FROM audit_log "
+            "WHERE status = 'error' AND http_status IN (401, 403) "
+            "AND created_at >= ? "
+            "ORDER BY id DESC LIMIT 1",
+            (cutoff.isoformat(),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "category": (
+            row["error_category"]
+            if row["error_category"] in {"auth", "permission"}
+            else "unknown"
+        ),
+        "http_status": row["http_status"] if row["http_status"] in {401, 403} else None,
+        "created_at": row["created_at"],
+    }
+
+
 def recorded_token_usage(
     model_usage: object, source: str
 ) -> tuple[dict[str, int], str] | None:

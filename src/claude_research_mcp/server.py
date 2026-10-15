@@ -53,6 +53,7 @@ from .persistence import (
     initialize,
     list_conversations,
     patch_audit_conversation,
+    recent_api_auth_failure,
     record_audit_event,
     recorded_token_usage,
     reserve_call,
@@ -644,6 +645,17 @@ def create_app(settings: Settings) -> FastMCP:
                 "default_model": "opus" if "opus" in settings.models else next(iter(settings.models)),
                 "models": model_status,
             }
+            recent_failure = recent_api_auth_failure(settings.database_path)
+            if recent_failure is not None:
+                # `auth status` only validates local credentials. A recent
+                # 401/403 from a real invocation is stronger evidence about
+                # whether the bridge can actually serve requests.
+                result["service_available"] = False
+                result["service_unavailable_reason"] = "recent_api_auth_failure"
+                result["service_unavailable_http_status"] = recent_failure["http_status"]
+            else:
+                result["service_available"] = None
+                result["service_available_reason"] = "auth_status_does_not_probe_model_api"
             if not logged_in:
                 result["opus_quota"] = {
                     "available": False,
