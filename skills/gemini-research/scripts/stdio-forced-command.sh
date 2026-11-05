@@ -4,7 +4,7 @@ umask 077
 
 PRINCIPAL=${1-}
 case "$PRINCIPAL" in
-    owner|partner|partner2) ;;
+    owner|partner|partner2|partner3) ;;
     *) exit 64 ;;
 esac
 
@@ -33,7 +33,7 @@ exec /usr/bin/env -i \
     AGY_BIN=/opt/antigravity/current/bin/agy \
     GEMINI_MCP_WORK_ROOT=/var/lib/gemini-mcp/research \
     GEMINI_MCP_PRINCIPAL="$PRINCIPAL" \
-    GEMINI_MCP_PRINCIPALS=owner,partner,partner2 \
+    GEMINI_MCP_PRINCIPALS=owner,partner,partner2,partner3 \
     GEMINI_MCP_MODELS="$MODEL_POLICY" \
     GEMINI_MCP_DEFAULT_MODEL=pro \
     GEMINI_MCP_REQUIRE_EXPLICIT_MODEL=1 \

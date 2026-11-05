@@ -4,7 +4,7 @@ umask 077
 
 PRINCIPAL=${1-}
 case "$PRINCIPAL" in
-    owner|partner|partner2) ;;
+    owner|partner|partner2|partner3) ;;
     *) exit 64 ;;
 esac
 
@@ -14,7 +14,7 @@ PATH=/opt/claude-code/2.1.236:/usr/local/bin:/usr/bin:/bin
 CLAUDE_BIN=/opt/claude-code/2.1.236/claude
 CLAUDE_MCP_WORK_ROOT=/var/lib/claude-mcp/research
 CLAUDE_MCP_PRINCIPAL=$PRINCIPAL
-CLAUDE_MCP_PRINCIPALS=owner,partner,partner2
+CLAUDE_MCP_PRINCIPALS=owner,partner,partner2,partner3
 CLAUDE_MCP_MODELS='{"opus":{"cli_value":"opus","family":"opus","min_cli_version":"2.1.236"}}'
 CLAUDE_MCP_REQUIRED_CLI_VERSION=2.1.236
 CLAUDE_MCP_PROMPT_LIMIT=20000

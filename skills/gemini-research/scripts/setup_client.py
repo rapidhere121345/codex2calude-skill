@@ -58,7 +58,7 @@ LEGACY_TOOLS = (
     "gemini_continue",
     "gemini_close",
 )
-PRINCIPALS = ("owner", "partner", "partner2")
+PRINCIPALS = ("owner", "partner", "partner2", "partner3")
 FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{43}$")
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 RECONNECT_PROXY = SKILL_ROOT / "scripts" / "mcp_ssh_reconnect.py"

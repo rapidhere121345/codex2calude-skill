@@ -61,7 +61,7 @@ from .persistence import (
     reserve_call,
 )
 INSTRUCTIONS = (
-    "Private owner/partner/partner2 bridge over official Antigravity agy. Use one session per "
+    "Private owner/partner/partner2/partner3 bridge over official Antigravity agy. Use one session per "
     "logical task; list by title to recover conversation_id, export to review "
     "history, and pass conversation_id to continue. The bridge does not expose "
     "shell, file, browser, or arbitrary MCP controls. Web search is enabled "

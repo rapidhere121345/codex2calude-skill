@@ -9,7 +9,7 @@ from claude_research_mcp.raw_error_logs import prune_raw_errors
 
 def main() -> int:
     root = Path("/var/lib/claude-mcp/research")
-    results = [prune_raw_errors(root, principal=role) for role in ("owner", "partner", "partner2")]
+    results = [prune_raw_errors(root, principal=role) for role in ("owner", "partner", "partner2", "partner3")]
     if not all(results):
         print("Private diagnostic retention check failed; inspect storage permissions.", file=sys.stderr)
         return 1

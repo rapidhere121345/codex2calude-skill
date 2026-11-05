@@ -9,7 +9,7 @@ import sqlite3
 from typing import Iterable
 
 
-PRINCIPALS = ("owner", "partner", "partner2", "total")
+PRINCIPALS = ("owner", "partner", "partner2", "partner3", "total")
 BRIDGES = ("claude", "gemini", "total")
 PERIODS = {"24h": 24, "7d": 7 * 24, "30d": 30 * 24, "all": None}
 TOKEN_FIELDS = (
@@ -122,7 +122,7 @@ def _touch_all(groups: dict[str, dict[str, object]]) -> None:
 
 
 def _principal(value: object) -> str:
-    return value if value in ("owner", "partner", "partner2") else "other"
+    return value if value in ("owner", "partner", "partner2", "partner3") else "other"
 
 
 def _safe_int(value: object) -> int | None:

@@ -28,7 +28,7 @@ def test_raw_log_retention_runs_privately_without_network_or_shell() -> None:
 def test_pruner_only_calls_fixed_stores_and_never_prints_raw_content() -> None:
     source = (ROOT / "scripts/prune-error-logs.py").read_text()
     assert 'Path("/var/lib/claude-mcp/research")' in source
-    assert '("owner", "partner", "partner2")' in source
+    assert '("owner", "partner", "partner2", "partner3")' in source
     assert "prune_raw_errors" in source
     assert "read_text" not in source
     assert "read_bytes" not in source
