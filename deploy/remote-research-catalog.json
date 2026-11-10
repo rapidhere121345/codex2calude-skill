@@ -19,7 +19,7 @@
           "cli_value": "claude-fable-5-2",
           "family": "fable",
           "reasoning_effort": "high",
-          "min_cli_version": "2.1.280",
+          "min_cli_version": "2.1.290",
           "enabled": false,
           "verified": false
         }

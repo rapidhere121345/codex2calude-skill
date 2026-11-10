@@ -46,8 +46,8 @@ _SHARED_ENV = {
 }
 _CLAUDE_ENV = {
     "HOME": "/var/lib/claude-mcp",
-    "PATH": "/opt/claude-code/2.1.280:/usr/local/bin:/usr/bin:/bin",
-    "CLAUDE_BIN": "/opt/claude-code/2.1.280/claude",
+    "PATH": "/opt/claude-code/current:/usr/local/bin:/usr/bin:/bin",
+    "CLAUDE_BIN": "/opt/claude-code/current/claude",
     "CLAUDE_MCP_WORK_ROOT": "/var/lib/claude-mcp/research",
     "CLAUDE_MCP_REQUIRED_CLI_VERSION": "2.1.280",
     "CLAUDE_MCP_PROMPT_LIMIT": "20000",

@@ -97,6 +97,13 @@ Architecture and API contract:
 Catalog and dispatcher unit are in `deploy/`; model activation is an operator
 decision, not a client override.
 
+The Claude helper executes `/opt/claude-code/current/claude`, a root-managed
+pointer to an installed, pinned native build. Updating a user's own
+`~/.local/bin/claude` alone does not upgrade the service. Install the verified
+build under `/opt/claude-code/`, update that pointer, and keep the previous
+build for rollback. Fable 5.2 requires Claude Code 2.1.290 or newer; its catalog
+minimum prevents an enabled preset from using an older CLI.
+
 Quota observations distinguish logged out, unknown, stale and available.
 Transport verification is separate from provider login and model inference
 acceptance. Do not interpret missing observations as zero usage or unlimited
