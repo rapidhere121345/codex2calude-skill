@@ -224,6 +224,19 @@ def _evidence_error(result: dict, provider: str,
     matched = any(m == cli_value or pat.fullmatch(m) for m in models)
     if not matched:
         return "model_evidence_mismatch"
+    usage = result.get("model_usage")
+    if isinstance(usage, list):
+        output_models = {
+            item["model"] for item in usage
+            if isinstance(item, dict)
+            and isinstance(item.get("model"), str) and item["model"]
+            and type(item.get("output_tokens")) is int
+            and item["output_tokens"] > 0
+        }
+        # A zero-output configured bucket cannot mask another output model.
+        if output_models and not any(
+                m == cli_value or pat.fullmatch(m) for m in output_models):
+            return "model_evidence_mismatch"
     return None
 
 
