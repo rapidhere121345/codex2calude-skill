@@ -27,6 +27,8 @@ const principalLabels = new Map([
   ["owner", "我"],
   ["partner", "伙伴"],
   ["partner2", "伙伴 2"],
+  ["partner3", "伙伴 3"],
+  ["partner4", "伙伴 4"],
   ["total", "合计"],
 ]);
 
@@ -236,7 +238,7 @@ function renderProvider(provider, payload) {
     return;
   }
   const grid = node(card, "div", `principal-grid ${payload.filters.principal !== "total" ? "two-people" : ""}`);
-  for (const principal of ["owner", "partner", "partner2", "total"]) {
+  for (const principal of ["owner", "partner", "partner2", "partner3", "partner4", "total"]) {
     if (principal !== "total" && payload.filters.principal !== "total" && principal !== payload.filters.principal) continue;
     renderPrincipalCard(grid, principal, payload.metrics[`${provider}:${principal}`]);
   }
