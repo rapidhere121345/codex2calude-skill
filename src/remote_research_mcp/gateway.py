@@ -202,7 +202,8 @@ class Gateway:
     def _model_meta(self, spec: ModelSpec) -> dict:
         return {"label": spec.label, "enabled": spec.enabled,
                 "verified": spec.verified,
-                "reasoning_effort": spec.reasoning_effort}
+                "reasoning_effort": spec.reasoning_effort,
+                "evidence_policy": spec.evidence_policy}
 
     def _annotate(self, result: dict, provider: str,
                   public_model: str | None,

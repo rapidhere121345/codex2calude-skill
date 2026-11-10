@@ -136,12 +136,15 @@ def _bridge(value: object, provider: str) -> dict[str, object]:
                 "cli_version",
                 "claude_version",
                 "reasoning_effort",
+                "model_evidence_policy",
                 "service_available",
                 "service_unavailable_reason",
                 "service_available_reason",
             },
         )
         clean = result["account"]
+        if clean.get("model_evidence_policy") not in ("execution_model", "cli_session_binding"):
+            clean.pop("model_evidence_policy", None)
         if not isinstance(clean.get("default_model"), str) or clean["default_model"] not in _PUBLIC_MODELS:
             clean.pop("default_model", None)
         if not isinstance(clean.get("reasoning_effort"), str) or clean["reasoning_effort"] not in _EFFORTS:
@@ -199,6 +202,11 @@ def _bridge(value: object, provider: str) -> dict[str, object]:
                         {"reasoning_effort": item["reasoning_effort"]}
                         if isinstance(item.get("reasoning_effort"), str)
                         and item["reasoning_effort"] in _EFFORTS
+                        else {}
+                    ),
+                    **(
+                        {"evidence_policy": item["evidence_policy"]}
+                        if item.get("evidence_policy") in ("execution_model", "cli_session_binding")
                         else {}
                     ),
                 }

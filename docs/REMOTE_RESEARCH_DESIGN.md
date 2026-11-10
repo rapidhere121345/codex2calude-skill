@@ -58,6 +58,32 @@ Gemini's quota uses its existing `quota`. A failed provider must not suppress
 another provider's status. Authentication and actual inference availability are
 distinct. Never turn missing quota observations into zero or unlimited usage.
 
+### Evidence Levels
+
+Each root-owned catalog model has an `evidence_policy`. Its default is
+`execution_model`, preserving the existing per-result `actual_models` check.
+Only Gemini can explicitly use `cli_session_binding`, and that policy requires
+catalog `verified=false`. This policy is server-owned, not a client override or
+a new wire-selection field. A single catalog snapshot supplies both selection
+validation and the evidence policy before a model call starts.
+
+Binding acceptance requires one native `init` followed only by `step_update`
+events and one terminal `result`; their conversation UUIDs must correlate
+without being exported. The CLI-declared model must match the pinned native
+selection; conflicting model declarations, failed or denied results, blank
+responses, and absent/invalid/nonpositive usage fail closed. High effort is
+explicitly pinned by the backend command and labelled as such, not reported as
+an independently observed engine setting. Reported execution models, if
+present, must still match; binding never overrides contradictory evidence.
+
+An accepted binding response retains `actual_models=[]` and adds an exact
+sanitized `model_evidence` object with level `cli_session_binding`,
+`reported_model`, pinned effort and its source, successful correlation and
+usage booleans, and `backend_model_verified=false`. It is usable session
+binding evidence, not independent proof of the actual Google backend model.
+Status exposes the configured policy separately from login, quota, and
+execution verification. Clients must never promote binding to execution proof.
+
 ## Persistence and History
 
 The gateway uses its own SQLite route map; original provider databases and

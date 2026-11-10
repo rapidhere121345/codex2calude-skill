@@ -82,9 +82,16 @@ Do preserve old files and configuration in protected rollback backups.
    use_web=false, and:
    Reply with REMOTE_RESEARCH_ACCEPTANCE_OK only.
 
-   Check the actual reply and reported actual model. Do not use an auxiliary
-   command-line bridge client for this inference acceptance. An unavailable
-   provider stays explicitly pending; do not silently switch provider or model.
+   Check that the actual reply, stripping surrounding whitespace, matches the
+   marker. Respect the server's evidence_policy. Claude execution_model requires
+   matching actual_models. Gemini cli_session_binding requires matching
+   model_evidence with level=cli_session_binding, the selected reported_model
+   and High effort, and backend_model_verified=false. Report this as CLI session
+   binding verification, not proof of the backend's actual execution model;
+   actual_models can remain empty and execution verified must remain false.
+   Never infer a binding pass from missing metadata. Do not use an auxiliary
+   command-line bridge client for inference acceptance. An unavailable provider
+   stays explicitly pending; do not silently switch provider, model, or policy.
 
 10. Report the installed Git commit, host/principal, backup paths, seven-tool
     verification, provider/model acceptance results, and any restart/pending

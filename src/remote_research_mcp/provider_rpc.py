@@ -14,6 +14,10 @@ import sys
 import uuid
 from pathlib import Path
 
+from gemini_research_mcp.model_evidence import (
+    CLI_SESSION_BINDING, EXECUTION_MODEL, binding_matches,
+)
+
 from .catalog import PROVIDERS, CatalogError, load_catalog
 
 MAX_REQUEST = 32 * 1024 * 1024
@@ -154,7 +158,7 @@ def _load_backend(provider: str):
 
 
 def _selection_error(request: dict, provider: str, op: str,
-                     catalog_path: Path, settings) -> str | None:
+                     catalog_path: Path, settings, *, catalog=None) -> str | None:
     """Compare trusted selection against fresh catalog AND the actual
     backend Settings object built once for this call. Fail closed."""
     if op not in INFER_OPS:
@@ -171,7 +175,7 @@ def _selection_error(request: dict, provider: str, op: str,
     elif args.get("model") is None:
         return "missing_selection"
     try:
-        spec = load_catalog(catalog_path).resolve(
+        spec = (catalog if catalog is not None else load_catalog(catalog_path)).resolve(
             provider, sel["public_model"])
     except CatalogError:
         return "selection_rejected"
@@ -194,9 +198,20 @@ def _selection_error(request: dict, provider: str, op: str,
 
 
 def _evidence_error(result: dict, provider: str,
-                    cli_value: str | None) -> str | None:
-    """Lead policy: reported native models must prove the pinned selection."""
+                    cli_value: str | None, *,
+                    evidence_policy: str = EXECUTION_MODEL,
+                    reasoning_effort: str | None = None) -> str | None:
+    """Keep execution proof strict; permit only explicitly configured binding."""
     models = result.get("actual_models")
+    if models == [] and type(models) is list \
+            and provider == "gemini" and evidence_policy == CLI_SESSION_BINDING:
+        if binding_matches(result.get("model_evidence"), cli_value, reasoning_effort):
+            return None
+        evidence = result.get("model_evidence")
+        if isinstance(evidence, dict) and binding_matches(
+                evidence, evidence.get("reported_model"), evidence.get("reasoning_effort")):
+            return "model_evidence_mismatch"
+        return "model_evidence_missing"
     if not isinstance(models, list) or not models \
             or not all(isinstance(m, str) and m for m in models):
         return "model_evidence_missing"
@@ -295,9 +310,16 @@ async def _dispatch(reader: asyncio.StreamReader, provider: str,
         os.environ.update(env)
         config_mod, server_mod = _load_backend(provider)
         settings = config_mod.load_settings(env)
-        bad = _selection_error(request, provider, op, catalog_path, settings)
+        request_catalog = load_catalog(catalog_path)
+        bad = _selection_error(request, provider, op, catalog_path, settings,
+                               catalog=request_catalog)
         if bad is not None:
             return _error_result(bad, request_id)
+        evidence_policy = EXECUTION_MODEL
+        if op in INFER_OPS:
+            selected_spec = request_catalog.resolve(
+                provider, request["selection"]["public_model"])
+            evidence_policy = selected_spec.evidence_policy
         app = server_mod.create_app(settings)
         fn = app._tool_manager._tools[tool].fn
     except Exception:
@@ -321,10 +343,16 @@ async def _dispatch(reader: asyncio.StreamReader, provider: str,
         except BaseException:
             pass
         result = task.result()
+        if op == "status" and isinstance(result, dict):
+            cat = request_catalog.provider(provider)
+            result["model_evidence_policy"] = \
+                cat.models[cat.default_model].evidence_policy
         if op in INFER_OPS:
             sel = request.get("selection") or {}
             ev = _evidence_error(result if isinstance(result, dict) else {},
-                                 provider, sel.get("cli_value"))
+                                 provider, sel.get("cli_value"),
+                                 evidence_policy=evidence_policy,
+                                 reasoning_effort=sel.get("reasoning_effort"))
             if ev is not None:
                 rid = (_uuid_or_none(result.get("request_id"))
                        if isinstance(result, dict) else None) \

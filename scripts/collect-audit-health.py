@@ -73,6 +73,7 @@ def sanitize_account(status, provider=None):
         'status': {'ok','error','busy','unknown','unavailable'},
         'default_model': {'opus-5-5-high','fable-5-2-high','gemini-3-8-flash-high'},
         'reasoning_effort': {'low','medium','high','xhigh','max'},
+        'model_evidence_policy': {'execution_model','cli_session_binding'},
         'service_unavailable_reason': {'requires_claude_ai_login','recent_api_auth_failure'},
         'service_available_reason': {'auth_status_does_not_probe_model_api'},
     }
@@ -171,6 +172,9 @@ def sanitize_account(status, provider=None):
             effort = raw.get('reasoning_effort')
             if isinstance(effort,str) and effort in labels['reasoning_effort']:
                 model['reasoning_effort'] = effort
+            policy = raw.get('evidence_policy')
+            if isinstance(policy,str) and policy in labels['model_evidence_policy']:
+                model['evidence_policy'] = policy
             account['models'][name] = model
     return account
 

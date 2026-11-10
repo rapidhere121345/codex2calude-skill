@@ -24,6 +24,22 @@ is unknown. Status distinguishes configured models, login state, verification,
 and quota observations. A configured model is not proof of account entitlement
 or successful inference.
 
+Model evidence has two distinct levels, selected by the server's catalog:
+
+- `execution_model`: check the response's `actual_models` against the selected
+  native identifier. This remains the Claude policy.
+- `cli_session_binding`: the explicitly enabled Gemini policy checks a
+  correlated native CLI initialization and successful result, the declared
+  session model, positive token usage, and pinned High effort. This is not
+  independent proof of Google's backend execution model.
+
+For Gemini binding-mode results, inspect `model_evidence.level`,
+`reported_model`, `reasoning_effort`, and `backend_model_verified`. The latter
+must remain `false`; `actual_models` can correctly remain empty. Describe a
+pass as "CLI session binding verified; backend model not independently
+verified", never as execution-model verification. Missing metadata is not
+permission to assume this mode. Do not choose or weaken a policy client-side.
+
 New requests explicitly select `provider="claude"` or `provider="gemini"` and
 may select `model`. Omitting the model chooses that provider's server-managed
 default. Never fall back to another provider, model, effort, or billing method
@@ -148,9 +164,13 @@ authenticated provider:
 Reply with REMOTE_RESEARCH_ACCEPTANCE_OK only.
 ```
 
-Use `use_web=false` and the explicitly selected enabled model. Check the actual
-response and reported actual model before claiming full acceptance. An
-unavailable provider remains pending; do not manufacture a passing result.
+Use `use_web=false` and the explicitly selected enabled model. Compare the
+actual response after stripping surrounding whitespace with the exact marker.
+For `execution_model`, require matching reported actual models. For the
+explicit Gemini `cli_session_binding` policy, require the matching binding
+metadata and report its lower evidence level and `backend_model_verified=false`.
+A binding-mode pass must not set a model's execution `verified` flag to true.
+An unavailable provider remains pending; do not manufacture a passing result.
 
 ## Boundary
 

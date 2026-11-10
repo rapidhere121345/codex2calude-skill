@@ -36,7 +36,8 @@
           "reasoning_effort": "high",
           "min_cli_version": "1.2.14",
           "enabled": true,
-          "verified": true
+          "verified": false,
+          "evidence_policy": "cli_session_binding"
         }
       }
     }

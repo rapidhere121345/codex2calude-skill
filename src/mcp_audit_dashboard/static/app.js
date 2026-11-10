@@ -346,6 +346,9 @@ function healthCard(provider, bridge, subscription) {
   subscriptionPanel(card, subscription);
 
   const account = bridge.account || {};
+  if (account.model_evidence_policy === "cli_session_binding") {
+    node(card, "p", "metric-secondary", "验证方式：CLI 会话绑定；不提供后端实际模型证明。");
+  }
   const quota = account.quota || {};
   let renderedQuota = false;
   if (account.logged_in !== false && quota.available === true) {

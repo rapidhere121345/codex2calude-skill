@@ -26,6 +26,7 @@ class ModelSpec:
     enabled: bool
     verified: bool
     label: str
+    evidence_policy: str = "execution_model"
 
 
 @dataclass(frozen=True)
@@ -79,11 +80,17 @@ def _model_spec(provider: str, public_id: str, raw: object) -> ModelSpec:
     family = raw.get("family")
     effort = raw.get("reasoning_effort")
     min_ver = raw.get("min_cli_version")
+    evidence_policy = raw.get("evidence_policy", "execution_model")
     if not all(isinstance(v, str) and v for v in
                (backend, cli, family, min_ver)):
         raise CatalogError("invalid catalog model entry")
     if effort is not None and not isinstance(effort, str):
         raise CatalogError("invalid catalog model entry")
+    if evidence_policy not in ("execution_model", "cli_session_binding"):
+        raise CatalogError("invalid model evidence policy")
+    if evidence_policy == "cli_session_binding":
+        if provider != "gemini" or raw.get("verified") is not False:
+            raise CatalogError("session binding cannot claim execution verification")
     return ModelSpec(
         public_id=public_id, provider=provider, backend_model=backend,
         cli_value=cli, family=family, reasoning_effort=effort,
@@ -91,6 +98,7 @@ def _model_spec(provider: str, public_id: str, raw: object) -> ModelSpec:
         enabled=raw.get("enabled") is True,
         verified=raw.get("verified") is True,
         label=str(raw.get("label") or public_id),
+        evidence_policy=evidence_policy,
     )
 
 

@@ -42,6 +42,7 @@ from .executor import (
 )
 from . import diagnostics
 from .locking import concurrency_slot
+from .model_evidence import EFFORT_SOURCE, extract_session_binding
 from .persistence import (
     ContinueBurstLimitError,
     SessionOwnershipError,
@@ -423,12 +424,17 @@ def parse_gemini_result(stdout: str, stderr: str = "") -> dict[str, object]:
         if isinstance((model := item.get("model")), str) and model
     ]
 
-    return {
+    parsed: dict[str, object] = {
         "result": result,
         "session_id": session_id,
         "actual_models": actual_models,
         "model_usage": usage,
     }
+    binding = extract_session_binding(
+        payloads, expected_effort=EFFECTIVE_CLI_POLICY.reasoning_effort)
+    if binding is not None:
+        parsed["model_evidence"] = binding
+    return parsed
 
 
 def _load_single_json_object(stdout: str) -> dict[str, object] | None:
@@ -696,14 +702,33 @@ def _result(
     actual_models: list[str],
     use_web: bool,
 ) -> dict[str, object]:
-    return {
+    evidence: dict[str, object] | None = None
+    if actual_models:
+        evidence = {
+            "level": "execution_model",
+            "source": "native_result_model_usage",
+            "backend_model_verified": True,
+        }
+    else:
+        binding = parsed.get("model_evidence")
+        if isinstance(binding, dict):
+            evidence = {
+                **binding,
+                "reasoning_effort": EFFECTIVE_CLI_POLICY.reasoning_effort,
+                "reasoning_effort_source": EFFORT_SOURCE,
+            }
+    result: dict[str, object] = {
         "status": "ok",
         "model": model,
         "actual_models": actual_models,
         "use_web": use_web,
         "result": truncate_text(str(parsed["result"]), settings.result_limit),
         "model_usage": parsed["model_usage"],
+        "reasoning_effort": EFFECTIVE_CLI_POLICY.reasoning_effort,
     }
+    if evidence is not None:
+        result["model_evidence"] = evidence
+    return result
 
 
 def _start_policy(settings: Settings, logical_model: str) -> ModelPolicy:

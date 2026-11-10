@@ -57,6 +57,16 @@ verification state. Fable is a disabled candidate until the remote account
 passes real verification. A name in configuration is not proof of availability.
 Gemini's deployed preset is Flash, not an incorrectly relabeled Pro model.
 
+The catalog distinguishes `execution_model` evidence (Claude) from explicitly
+enabled `cli_session_binding` evidence (Gemini). Antigravity's headless result
+reports token usage but not an execution-model identifier. Gemini therefore
+validates its native CLI session declaration, correlated successful completion,
+and pinned model/High effort without inventing `actual_models`. Its response
+includes `model_evidence.level="cli_session_binding"` and
+`backend_model_verified=false`; catalog `verified` stays false. This is a usable
+CLI-binding acceptance level, not independent proof of Google's backend model.
+Clients must preserve and report that distinction.
+
 Normal request defaults are `use_web=true`, `max_turns=50`, and
 `timeout_seconds=900`. Provider-specific execution constraints still apply.
 Native provider session IDs and credentials never belong in client responses.
