@@ -10,6 +10,7 @@ import re
 
 
 DEFAULT_MODEL = "opus"
+REASONING_EFFORTS = frozenset(("low", "medium", "high", "xhigh", "max"))
 DEFAULT_PRINCIPALS = ("owner", "partner", "partner2")
 DEFAULT_REQUIRED_CLI_VERSION = (2, 1, 236)
 NUL_BYTE = "␀"  # Logical NUL marker; validate before ever creating a real NUL.
@@ -34,6 +35,7 @@ class ModelPolicy:
     cli_value: str
     family: str
     min_cli_version: tuple[int, ...]
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ def _model_policy(logical_name: object, raw: object) -> ModelPolicy:
     cli_value = raw.get("cli_value", logical_name)
     family = raw.get("family", logical_name)
     min_version = _required_version(raw.get("min_cli_version"))
+    reasoning_effort = raw.get("reasoning_effort")
     if (
         not isinstance(cli_value, str)
         or not isinstance(family, str)
@@ -119,7 +122,12 @@ def _model_policy(logical_name: object, raw: object) -> ModelPolicy:
         or not _FAMILY_RE.fullmatch(family)
     ):
         raise ConfigurationError("invalid CLAUDE_MCP_MODELS")
-    return ModelPolicy(logical_name, cli_value, family, min_version)
+    if reasoning_effort is not None and (
+        not isinstance(reasoning_effort, str)
+        or reasoning_effort not in REASONING_EFFORTS
+    ):
+        raise ConfigurationError("invalid CLAUDE_MCP_MODELS")
+    return ModelPolicy(logical_name, cli_value, family, min_version, reasoning_effort)
 
 
 def _models(raw: str | None) -> dict[str, ModelPolicy]:

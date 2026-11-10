@@ -4,6 +4,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -115,6 +116,8 @@ def fake_claude(
     session: str = "claude-session-123",
     logged_in: bool = True,
     auth_method: str = "claude.ai",
+    auth_exit_code: int = 0,
+    auth_stdout: str | None = None,
 ) -> None:
     mode = "fail" if fail else "ok"
     output = json.dumps(
@@ -137,6 +140,8 @@ def fake_claude(
         },
         separators=(",", ":"),
     )
+    if auth_stdout is not None:
+        auth_output = auth_stdout
     # Drain the test pipe before immediate shell responses: these fixtures test
     # response classification, not a child exiting before it accepts stdin.
     body = (
@@ -145,7 +150,7 @@ def fake_claude(
         "if [ \"$1\" = auth ] && [ \"$2\" = status ]; then\n"
         "  cat >/dev/null\n"
         f"  printf '%s\\n' '{auth_output}'\n"
-        "  exit 0\n"
+        f"  exit {auth_exit_code}\n"
         "fi\n"
         "prompt=$(cat)\n"
         f"printf '%s\\n' \"$@\" > {path}.argv\n"
@@ -775,6 +780,157 @@ def test_status_does_not_report_quota_for_missing_login(tmp_path, monkeypatch):
         "reason": "requires_claude_ai_login",
         "manual_check_url": "https://claude.ai/usage",
     }
+
+
+@pytest.mark.parametrize(
+    "auth_exit_code,auth_method,expected_method",
+    [(0, "none", "none"), (1, "none", "none"), (1, "unsafe@email", "unknown")],
+)
+def test_status_missing_login_is_success_without_cached_quota_or_probe(
+    tmp_path, monkeypatch, auth_exit_code, auth_method, expected_method
+):
+    settings = make_settings(tmp_path)
+    fake_claude(
+        settings.claude_bin,
+        logged_in=False,
+        auth_method=auth_method,
+        auth_exit_code=auth_exit_code,
+    )
+    monkeypatch.setattr(
+        server_module,
+        "recent_api_auth_failure",
+        lambda path: pytest.fail("missing login takes precedence over API failures"),
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_opus_quota_status",
+        lambda path: pytest.fail("unauthenticated status must not read cached quota"),
+    )
+    async def forbidden_probe(_settings):
+        pytest.fail("unauthenticated status must not invoke /usage")
+
+    monkeypatch.setattr(server_module, "_run_usage_probe", forbidden_probe)
+
+    status = asyncio.run(get_tool(create_app(settings), "claude_status")())
+
+    assert status["status"] == "ok"
+    assert status["logged_in"] is False
+    assert status["auth_method"] == expected_method
+    assert status["service_available"] is False
+    assert status["service_unavailable_reason"] == "requires_claude_ai_login"
+    assert "service_available_reason" not in status
+    assert status["opus_quota"] == {
+        "available": False,
+        "source": "claude_code_statusline",
+        "reason": "requires_claude_ai_login",
+        "manual_check_url": "https://claude.ai/usage",
+    }
+    assert "five_hour" not in status["opus_quota"]
+    with sqlite3.connect(settings.database_path) as connection:
+        assert connection.execute(
+            "SELECT status, error_category, exit_code FROM audit_log"
+        ).fetchall() == [("success", None, None)]
+
+
+@pytest.mark.parametrize(
+    "auth_stdout,auth_exit_code",
+    [
+        ("{", 1),
+        ('{"authMethod":"none"}', 1),
+        ('{"loggedIn":true}', 1),
+        ('{"loggedIn":"false"}', 1),
+        ('{"loggedIn":null}', 1),
+        ('["not an auth status"]', 1),
+        ('{"loggedIn":false}', 2),
+    ],
+)
+def test_status_rejects_nonzero_without_exact_logged_out_payload(
+    tmp_path, auth_stdout, auth_exit_code
+):
+    settings = make_settings(tmp_path)
+    fake_claude(
+        settings.claude_bin,
+        auth_stdout=auth_stdout,
+        auth_exit_code=auth_exit_code,
+    )
+    with pytest.raises(ExecutionError, match="Claude CLI failed") as caught:
+        asyncio.run(get_tool(create_app(settings), "claude_status")())
+    assert auth_stdout not in str(caught.value)
+    with sqlite3.connect(settings.database_path) as connection:
+        assert connection.execute(
+            "SELECT status, exit_code FROM audit_log"
+        ).fetchall() == [("error", auth_exit_code)]
+
+
+def test_authenticated_status_exit_zero_preserves_quota_source(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path)
+    fake_claude(settings.claude_bin, auth_exit_code=0)
+    sample = {"available": True, "source": "claude_code_statusline", "five_hour": {"used_percent": 23}}
+    monkeypatch.setattr(server_module, "get_opus_quota_status", lambda path: sample)
+
+    status = asyncio.run(get_tool(create_app(settings), "claude_status")())
+
+    assert status["logged_in"] is True
+    assert status["service_available"] is None
+    assert status["service_available_reason"] == "auth_status_does_not_probe_model_api"
+    assert status["opus_quota"] == sample
+
+
+def test_accepted_exit_code_does_not_relax_inference_or_safety_bounds(tmp_path):
+    command = [sys.executable, "-c", "import sys; print('ok'); sys.exit(1)"]
+    with pytest.raises(ClaudeResultError) as caught:
+        asyncio.run(
+            run_command(command, cwd=tmp_path, timeout_seconds=2, output_limit=50)
+        )
+    assert caught.value.exit_code == 1
+    accepted = asyncio.run(
+        run_command(
+            command, cwd=tmp_path, timeout_seconds=2, output_limit=50,
+            accepted_exit_codes=(0, 1),
+        )
+    )
+    assert accepted.exit_code == 1
+    assert accepted.stdout == "ok\n"
+    with pytest.raises(ExecutionError, match="output limit"):
+        asyncio.run(
+            run_command(
+                [sys.executable, "-c", "import sys; print('x' * 100); sys.exit(1)"],
+                cwd=tmp_path, timeout_seconds=2, output_limit=50,
+                accepted_exit_codes=(0, 1),
+            )
+        )
+    with pytest.raises(CommandTimeoutError):
+        asyncio.run(
+            run_command(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=tmp_path, timeout_seconds=1, output_limit=50,
+                accepted_exit_codes=(0, 1),
+            )
+        )
+
+    async def cancel_running_command():
+        pid_file = tmp_path / "cancelled.pid"
+        script = (
+            "import os, time; from pathlib import Path; "
+            f"Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(30)"
+        )
+        task = asyncio.create_task(
+            run_command(
+                [sys.executable, "-c", script],
+                cwd=tmp_path, timeout_seconds=60, output_limit=50,
+                accepted_exit_codes=(0, 1),
+            )
+        )
+        while not pid_file.exists():
+            await asyncio.sleep(0.01)
+        pid = int(pid_file.read_text())
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    asyncio.run(asyncio.wait_for(cancel_running_command(), timeout=5))
 
 
 def test_status_uses_official_usage_fallback_and_shared_cache(

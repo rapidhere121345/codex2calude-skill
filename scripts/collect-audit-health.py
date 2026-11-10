@@ -59,18 +59,22 @@ def safe_quota(value):
 
 
 
-def sanitize_account(status):
+def sanitize_account(status, provider=None):
+    if not isinstance(status, dict):
+        status = {}
     account = {}
     auth = status.get('auth') if isinstance(status.get('auth'), dict) else {}
     logins = [v for v in (status.get('logged_in'), auth.get('logged_in')) if type(v) is bool]
     account['logged_in'] = False if False in logins else True if True in logins else None
-    for key in ('model_selection_ready',):
+    for key in ('model_selection_ready', 'service_available'):
         if type(status.get(key)) is bool:
             account[key] = status[key]
     labels = {
-        'status': {'ok','error','unknown','unavailable'},
-        'default_model': {'opus','pro','flash'},
-        'reasoning_effort': {'low','medium','high','max','minimal'},
+        'status': {'ok','error','busy','unknown','unavailable'},
+        'default_model': {'opus-5-5-high','fable-5-2-high','gemini-3-8-flash-high'},
+        'reasoning_effort': {'low','medium','high','xhigh','max'},
+        'service_unavailable_reason': {'requires_claude_ai_login','recent_api_auth_failure'},
+        'service_available_reason': {'auth_status_does_not_probe_model_api'},
     }
     for key, allowed in labels.items():
         value = status.get(key)
@@ -80,7 +84,71 @@ def sanitize_account(status):
         value = status.get(key)
         if isinstance(value, str) and len(value) <= 80 and value and value[0].isdigit() and all(c.isalnum() or c in ' .()+-' for c in value):
             account[key] = value
-    account['quota'] = safe_quota(status.get('opus_quota',status.get('quota')))
+
+    def clean_quota(value, depth=0):
+        if not isinstance(value, dict):
+            return {'available': False, 'reason': 'unknown'}
+        quota = {'available': value.get('available') is True}
+        reasons = {
+            'unknown', 'requires_claude_ai_login', 'statusline_observation_unavailable',
+            'statusline_observation_expired', 'invalid_statusline_observation',
+            'usage_command_unavailable', 'usage_command_failed',
+            'invalid_usage_command_output', 'not_reported_by_agy',
+        }
+        sources = {'claude_code_statusline', 'claude_code_usage_command', 'antigravity_cli_usage'}
+        if isinstance(value.get('reason'), str) and value['reason'] in reasons:
+            quota['reason'] = value['reason']
+        elif not quota['available']:
+            quota['reason'] = 'unknown'
+        if isinstance(value.get('source'), str) and value['source'] in sources:
+            quota['source'] = value['source']
+        if value.get('manual_check_url') == 'https://claude.ai/usage':
+            quota['manual_check_url'] = 'https://claude.ai/usage'
+        if type(value.get('stale')) is bool:
+            quota['stale'] = value['stale']
+
+        def timestamp(raw):
+            if not isinstance(raw, str) or not 1 <= len(raw) <= 64:
+                return None
+            try:
+                parsed = dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            except (ValueError, OverflowError):
+                return None
+            return raw if parsed.tzinfo is not None else None
+
+        for key in ('observed_at', 'resets_at', 'reset_at'):
+            valid = timestamp(value.get(key))
+            if valid is not None:
+                quota[key] = valid
+        for key in ('age_seconds', 'staleness_seconds'):
+            raw = value.get(key)
+            if type(raw) in (int, float) and 0 <= raw <= 315_360_000:
+                quota[key] = raw
+        if quota['available']:
+            for key in ('used_percent', 'remaining_percent', 'utilization'):
+                raw = value.get(key)
+                if type(raw) in (int, float) and 0 <= raw <= 100:
+                    quota[key] = raw
+            if depth == 0:
+                for window in ('five_hour', 'seven_day'):
+                    raw = value.get(window)
+                    if isinstance(raw, dict):
+                        cleaned = clean_quota({'available': True, **raw}, 1)
+                        cleaned.pop('available', None)
+                        if cleaned:
+                            quota[window] = cleaned
+        return quota
+
+    account['quota'] = clean_quota(status.get('quota'))
+    if provider == 'claude' and account['logged_in'] is False:
+        account['service_available'] = False
+        account['service_unavailable_reason'] = 'requires_claude_ai_login'
+        account.pop('service_available_reason', None)
+        account['quota'] = {
+            'available': False,
+            'reason': 'requires_claude_ai_login',
+            'manual_check_url': 'https://claude.ai/usage',
+        }
     availability = status.get('availability')
     account['availability'] = {}
     if isinstance(availability, dict):
@@ -93,9 +161,13 @@ def sanitize_account(status):
     models = status.get('models')
     if isinstance(models, dict):
         for name, raw in models.items():
-            if name not in {'opus','pro','flash'} or not isinstance(raw, dict):
+            if name not in labels['default_model'] or not isinstance(raw, dict):
                 continue
-            model = {key:raw[key] for key in ('cli_supported','selection_ready') if type(raw.get(key)) is bool}
+            if provider == 'claude' and name == 'gemini-3-8-flash-high':
+                continue
+            if provider == 'gemini' and name != 'gemini-3-8-flash-high':
+                continue
+            model = {key:raw[key] for key in ('enabled','verified','cli_supported','selection_ready') if type(raw.get(key)) is bool}
             effort = raw.get('reasoning_effort')
             if isinstance(effort,str) and effort in labels['reasoning_effort']:
                 model['reasoning_effort'] = effort
@@ -103,48 +175,114 @@ def sanitize_account(status):
     return account
 
 
-def probe(bridge):
-    start=time.monotonic(); result={'checked_at':now(),'probe_ok':False,'transport':{'initialize_ok':False,'tools_count':None,'probe_kind':'local_forced_command'}}
+def probe_unified():
+    start=time.monotonic()
+    checked_at=now()
+    results={
+        provider: {
+            'checked_at': checked_at,
+            'probe_ok': False,
+            'account_ready': None,
+            'transport': {
+                'initialize_ok': False,
+                'tools_count': None,
+                'probe_kind': 'local_unified_forced_command',
+            },
+        }
+        for provider in ('claude','gemini')
+    }
     proc=None
     try:
-        proc=subprocess.Popen(['runuser','-u',bridge+'mcp','--','/opt/'+bridge+'-research-mcp/current/scripts/stdio-forced-command.sh','owner'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
         deadline=start+90
+        proc=subprocess.Popen(
+            ['runuser','-u','researchmcp','--',
+             '/opt/remote-research-mcp/current/scripts/run-remote-research-forced-command.sh','owner'],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
         send(proc,'initialize',{'protocolVersion':'2024-11-05','capabilities':{},'clientInfo':{'name':'owner-health-monitor','version':'1'}},1)
         init=rpc_read(proc,1,deadline)
-        result['transport']['initialize_ok']=True
-        result['transport']['server_version']=init.get('serverInfo',{}).get('version')
+        if not isinstance(init,dict) or not isinstance(init.get('serverInfo'),dict):
+            raise ValueError('invalid initialize')
+        for result in results.values():
+            result['transport']['initialize_ok']=True
+        version=init['serverInfo'].get('version')
+        if isinstance(version,str) and version.isascii() and version and version[0].isdigit() and len(version)<=80 and all(c.isalnum() or c in '.+-' for c in version):
+            for result in results.values():
+                result['transport']['server_version']=version
         send(proc,'notifications/initialized')
-        send(proc,'tools/list',{},2);listed=rpc_read(proc,2,deadline)
-        names={t.get('name') for t in listed.get('tools',[])}
-        result['transport']['tools_count']=len(names)
-        if names!={bridge+'_'+suffix for suffix in ['status','once','start','list_conversations','export_conversation','continue','close']}:raise ValueError('tool catalogue')
-        send(proc,'tools/call',{'name':bridge+'_status','arguments':{}},3)
+        send(proc,'tools/list',{},2)
+        listed=rpc_read(proc,2,deadline)
+        tools=listed.get('tools') if isinstance(listed,dict) else None
+        names=[tool.get('name') for tool in tools] if isinstance(tools,list) and all(isinstance(tool,dict) for tool in tools) else []
+        for result in results.values():
+            result['transport']['tools_count']=len(names)
+        expected={'research_'+suffix for suffix in ('status','once','start','continue','list_conversations','export_conversation','close')}
+        if len(names)!=7 or set(names)!=expected:
+            raise ValueError('tool catalogue')
+        send(proc,'tools/call',{'name':'research_status','arguments':{}},3)
         response=rpc_read(proc,3,deadline)
-        if response.get('isError'):raise ValueError('status error')
+        if not isinstance(response,dict) or response.get('isError'):
+            raise ValueError('status error')
         status=response.get('structuredContent')
         if not isinstance(status,dict):
-            status=next((json.loads(c['text']) for c in response.get('content',[]) if c.get('type')=='text'),{})
-        account = sanitize_account(status)
-        result['account'] = account
-        result['probe_ok'] = status.get('status') == 'ok'
-        result['account_ready'] = (
-            None if account['logged_in'] is None else
-            result['probe_ok'] and account['logged_in'] and
-            account['availability'].get('eligible') is not False and
-            account.get('model_selection_ready') is not False
-        )
+            content=response.get('content')
+            if not isinstance(content,list):
+                raise ValueError('status response')
+            texts=[item.get('text') for item in content if isinstance(item,dict) and item.get('type')=='text']
+            if len(texts)!=1 or not isinstance(texts[0],str):
+                raise ValueError('status response')
+            status=json.loads(texts[0])
+        if not isinstance(status,dict) or status.get('principal')!='owner':
+            raise ValueError('status principal')
+        providers=status.get('providers')
+        if not isinstance(providers,dict) or not all(
+            isinstance(providers.get(name),dict)
+            and providers[name].get('status') in ('ok','busy','error','unavailable','unknown')
+            for name in ('claude','gemini')
+        ):
+            raise ValueError('status providers')
+        for name in ('claude','gemini'):
+            entry=providers[name]
+            account=sanitize_account(entry,name)
+            result=results[name]
+            result['account']=account
+            result['probe_ok']=True
+            category=entry.get('error')
+            if entry.get('status')!='ok':
+                allowed={'auth','rate_limit','model_unavailable','permission','network',
+                         'invalid_argument','runtime','timeout','busy','unknown','unavailable'}
+                result['provider_error_category']=category if isinstance(category,str) and category in allowed else 'unknown'
+            if (account['logged_in'] is False or account['availability'].get('eligible') is False
+                or account.get('model_selection_ready') is False
+                or account.get('service_available') is False):
+                result['account_ready']=False
+            elif entry.get('status')=='ok' and account['logged_in'] is True:
+                result['account_ready']=True
     except Exception as exc:
-        result['error_category']=type(exc).__name__
+        for result in results.values():
+            result['probe_ok']=False
+            result['account_ready']=None
+            result.pop('account',None)
+            result.pop('provider_error_category',None)
+            result['error_category']=type(exc).__name__
     finally:
-        result['latency_ms']=round((time.monotonic()-start)*1000)
         if proc:
-            if proc.stdin:proc.stdin.close()
-            try:proc.wait(timeout=5)
+            if proc.stdin:
+                try:proc.stdin.close()
+                except OSError:pass
+            try:proc.wait(timeout=max(0, min(5, deadline-time.monotonic())))
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid,signal.SIGTERM)
-                try:proc.wait(timeout=3)
-                except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL);proc.wait()
-    return result
+                try:os.killpg(proc.pid,signal.SIGTERM)
+                except ProcessLookupError:pass
+                try:proc.wait(timeout=max(0, min(3, deadline-time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    try:os.killpg(proc.pid,signal.SIGKILL)
+                    except ProcessLookupError:pass
+                    proc.wait()
+        for result in results.values():
+            result['latency_ms']=round((time.monotonic()-start)*1000)
+    return results
 
 
 def system_metrics():
@@ -241,7 +379,7 @@ def main():
     for bridge in ['claude','gemini']:snapshot_audit(bridge,path.parent)
     if args.audit_only:
         print(json.dumps({'audit_snapshot_at':now()}));return
-    result={'observed_at':now(),'bridges':{bridge:probe(bridge) for bridge in ['claude','gemini']},'system':system_metrics()}
+    result={'observed_at':now(),'bridges':probe_unified(),'system':system_metrics()}
     try:
         with socket.create_connection(('127.0.0.1',22022),timeout=5) as sock:
             sock.settimeout(5);banner=sock.recv(256)

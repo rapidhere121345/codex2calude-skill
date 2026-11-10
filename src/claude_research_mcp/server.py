@@ -346,6 +346,7 @@ async def _run(
     *,
     timeout_seconds: int,
     prompt: str | None,
+    accepted_exit_codes: tuple[int, ...] = (0,),
 ):
     async with concurrency_slot(settings.lock_dir, settings.concurrency):
         return await run_command(
@@ -354,6 +355,7 @@ async def _run(
             timeout_seconds=timeout_seconds,
             output_limit=settings.output_limit,
             prompt=prompt,
+            accepted_exit_codes=accepted_exit_codes,
         )
 
 
@@ -390,15 +392,21 @@ def _result(
     model: str,
     actual_models: list[str],
     use_web: bool,
+    configured_model: str,
+    reasoning_effort: str | None,
 ) -> dict[str, object]:
-    return {
+    result: dict[str, object] = {
         "status": "ok",
         "model": model,
+        "configured_model": configured_model,
         "actual_models": actual_models,
         "use_web": use_web,
         "result": truncate_text(str(parsed["result"]), settings.result_limit),
         "model_usage": parsed["model_usage"],
     }
+    if reasoning_effort is not None:
+        result["reasoning_effort"] = reasoning_effort
+    return result
 
 
 def _claude_home() -> Path:
@@ -618,15 +626,37 @@ def create_app(settings: Settings) -> FastMCP:
                 build_auth_status_command(settings.claude_bin),
                 timeout_seconds=15,
                 prompt=None,
+                accepted_exit_codes=(0, 1),
             )
             try:
                 auth_payload = json.loads(auth_raw.stdout)
-            except (TypeError, json.JSONDecodeError) as exc:
+            except (TypeError, json.JSONDecodeError, RecursionError) as exc:
+                if auth_raw.exit_code == 1:
+                    category, http_status = classify_claude_error(
+                        auth_raw.stdout, auth_raw.stderr
+                    )
+                    error = ClaudeResultError(category, http_status, auth_raw.exit_code)
+                    diagnostics.attach_raw_error(
+                        error, stdout=auth_raw.stdout, stderr=auth_raw.stderr
+                    )
+                    raise error from exc
                 error = ExecutionError("Claude CLI returned invalid auth status")
                 diagnostics.attach_raw_error(
                     error, stdout=auth_raw.stdout, stderr=auth_raw.stderr
                 )
                 raise error from exc
+            if auth_raw.exit_code == 1 and (
+                not isinstance(auth_payload, dict)
+                or auth_payload.get("loggedIn") is not False
+            ):
+                category, http_status = classify_claude_error(
+                    auth_raw.stdout, auth_raw.stderr
+                )
+                error = ClaudeResultError(category, http_status, auth_raw.exit_code)
+                diagnostics.attach_raw_error(
+                    error, stdout=auth_raw.stdout, stderr=auth_raw.stderr
+                )
+                raise error
             if not isinstance(auth_payload, dict):
                 raise ExecutionError("Claude CLI returned invalid auth status")
             logged_in = auth_payload.get("loggedIn") is True
@@ -645,8 +675,12 @@ def create_app(settings: Settings) -> FastMCP:
                 "default_model": "opus" if "opus" in settings.models else next(iter(settings.models)),
                 "models": model_status,
             }
-            recent_failure = recent_api_auth_failure(settings.database_path)
-            if recent_failure is not None:
+            if not logged_in:
+                result["service_available"] = False
+                result["service_unavailable_reason"] = "requires_claude_ai_login"
+            elif (
+                recent_failure := recent_api_auth_failure(settings.database_path)
+            ) is not None:
                 # `auth status` only validates local credentials. A recent
                 # 401/403 from a real invocation is stronger evidence about
                 # whether the bridge can actually serve requests.
@@ -717,6 +751,7 @@ def create_app(settings: Settings) -> FastMCP:
             settings,
             resume_session_id=None,
             model_cli_value=policy.cli_value,
+            reasoning_effort=policy.reasoning_effort,
             use_web=clean_web,
             max_turns=clean_turns,
         )
@@ -765,6 +800,8 @@ def create_app(settings: Settings) -> FastMCP:
                 model=logical_model,
                 actual_models=actual_models,
                 use_web=clean_web,
+                configured_model=settings.models[logical_model].cli_value,
+                reasoning_effort=settings.models[logical_model].reasoning_effort,
             )
             result["request_id"] = request_id
             finish_call(
@@ -835,12 +872,16 @@ def create_app(settings: Settings) -> FastMCP:
                 model=logical_model,
                 request_id=request_id,
             )
+            policy = settings.models[logical_model]
             record = create_conversation(
                 settings.database_path,
                 settings.principal,
                 logical_model,
                 clean_web,
                 clean_title,
+                model_cli_value=policy.cli_value,
+                model_family=policy.family,
+                reasoning_effort=policy.reasoning_effort,
             )
             conversation = record.conversation_id
             if audit is not None:
@@ -869,6 +910,8 @@ def create_app(settings: Settings) -> FastMCP:
                 model=logical_model,
                 actual_models=actual_models,
                 use_web=clean_web,
+                configured_model=policy.cli_value,
+                reasoning_effort=policy.reasoning_effort,
             )
             result["conversation_id"] = conversation
             result["title"] = clean_title
@@ -942,8 +985,19 @@ def create_app(settings: Settings) -> FastMCP:
                 raise ConfigurationError("conversation is closed")
             if record.claude_session_id is None:
                 raise ConfigurationError("conversation has no attached Claude session")
-            logical_model = validate_model(record.model, settings)
-            policy = settings.models[logical_model]
+            logical_model = record.model
+            if record.model_cli_value is not None and record.model_family is not None:
+                model_cli_value = record.model_cli_value
+                model_family = record.model_family
+                reasoning_effort = record.reasoning_effort
+            else:
+                # Legacy rows have no snapshot; do not retroactively assign
+                # an effort from the current model configuration.
+                logical_model = validate_model(logical_model, settings)
+                policy = settings.models[logical_model]
+                model_cli_value = policy.cli_value
+                model_family = policy.family
+                reasoning_effort = None
             _, use_web, clean_turns, clean_timeout = validate_options(
                 model=logical_model,
                 use_web=record.use_web,
@@ -964,7 +1018,8 @@ def create_app(settings: Settings) -> FastMCP:
             command = build_ask_command(
                 settings,
                 resume_session_id=record.claude_session_id,
-                model_cli_value=policy.cli_value,
+                model_cli_value=model_cli_value,
+                reasoning_effort=reasoning_effort,
                 use_web=use_web,
                 max_turns=clean_turns,
             )
@@ -972,7 +1027,7 @@ def create_app(settings: Settings) -> FastMCP:
                 settings, command, timeout_seconds=clean_timeout, prompt=clean_prompt
             )
             parsed = parse_claude_result(raw.stdout, raw.stderr)
-            actual_models = _assert_requested_family(parsed, policy.family)
+            actual_models = _assert_requested_family(parsed, model_family)
             if parsed["session_id"] is not None:
                 attach_claude_session(
                     settings.database_path,
@@ -986,6 +1041,8 @@ def create_app(settings: Settings) -> FastMCP:
                 model=logical_model,
                 actual_models=actual_models,
                 use_web=use_web,
+                configured_model=model_cli_value,
+                reasoning_effort=reasoning_effort,
             )
             result["conversation_id"] = clean_conversation
             result["request_id"] = request_id

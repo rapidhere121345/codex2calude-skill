@@ -1,0 +1,44 @@
+{
+  "providers": {
+    "claude": {
+      "default_model": "opus-5-5-high",
+      "models": {
+        "opus-5-5-high": {
+          "label": "Claude Opus 5.5 High",
+          "backend_model": "opus55",
+          "cli_value": "claude-opus-5-5",
+          "family": "opus",
+          "reasoning_effort": "high",
+          "min_cli_version": "2.1.280",
+          "enabled": true,
+          "verified": false
+        },
+        "fable-5-2-high": {
+          "label": "Claude Fable 5.2 High",
+          "backend_model": "fable52",
+          "cli_value": "claude-fable-5-2",
+          "family": "fable",
+          "reasoning_effort": "high",
+          "min_cli_version": "2.1.280",
+          "enabled": false,
+          "verified": false
+        }
+      }
+    },
+    "gemini": {
+      "default_model": "gemini-3-8-flash-high",
+      "models": {
+        "gemini-3-8-flash-high": {
+          "label": "Gemini 3.8 Flash High",
+          "backend_model": "pro",
+          "cli_value": "gemini-3.8-flash-high",
+          "family": "gemini",
+          "reasoning_effort": "high",
+          "min_cli_version": "1.2.14",
+          "enabled": true,
+          "verified": true
+        }
+      }
+    }
+  }
+}

@@ -264,6 +264,7 @@ def build_ask_command(
     model_cli_value: str,
     use_web: bool,
     max_turns: int,
+    reasoning_effort: str | None = None,
 ) -> list[str]:
     """Build the fixed Claude argv; the untrusted prompt is never included."""
 
@@ -284,6 +285,8 @@ def build_ask_command(
     if resume_session_id is not None:
         command += ["--resume", resume_session_id]
     command += ["--model", model_cli_value]
+    if reasoning_effort is not None:
+        command += ["--effort", reasoning_effort]
     if use_web:
         command += [
             "--tools",
@@ -557,6 +560,7 @@ async def run_command(
     timeout_seconds: int,
     output_limit: int,
     prompt: str | None = None,
+    accepted_exit_codes: tuple[int, ...] = (0,),
 ) -> ExecutionResult:
     """Run Claude in a new process group with prompt stdin and bounded pipes."""
 
@@ -643,7 +647,7 @@ async def run_command(
     stderr_bytes = stderr_accumulator.value
     stdout = stdout_bytes[:output_limit].decode("utf-8", errors="replace")
     stderr = stderr_bytes[:output_limit].decode("utf-8", errors="replace")
-    if process.returncode != 0:
+    if process.returncode not in accepted_exit_codes:
         category, status = classify_claude_error(stdout, stderr)
         error = ClaudeResultError(category, status, process.returncode)
         attach_raw_error(

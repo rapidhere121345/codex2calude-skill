@@ -6,6 +6,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import struct
+import subprocess
 import threading
 
 import pytest
@@ -187,6 +188,84 @@ def test_health_snapshot_is_sanitized_and_reports_staleness(tmp_path):
     assert bridge["transport"]["probe_kind"] == "local_forced_command"
     assert bridge["transport"]["ssh_banner_ok"] is True
     assert result["system"]["workers"] == {"claude": 3, "gemini": 4}
+
+
+def test_unified_health_reader_preserves_public_models_and_hides_logged_out_cache(tmp_path):
+    path = tmp_path / "health.json"
+    timestamp = NOW.isoformat()
+    payload = {
+        "observed_at": timestamp,
+        "bridges": {
+            "claude": {
+                "probe_ok": True, "account_ready": False,
+                "account": {
+                    "logged_in": False, "status": "ok",
+                    "default_model": "opus-5-5-high",
+                    "service_available": False,
+                    "service_unavailable_reason": "requires_claude_ai_login",
+                    "quota": {
+                        "available": True, "source": "claude_code_statusline",
+                        "five_hour": {"used_percent": 42, "remaining_percent": 58},
+                        "token": "SECRET",
+                    },
+                    "models": {
+                        "opus-5-5-high": {
+                            "enabled": True, "verified": False,
+                            "cli_supported": True, "selection_ready": False,
+                            "reasoning_effort": "high", "token": "SECRET",
+                        },
+                        "fable-5-2-high": {"enabled": False, "verified": False},
+                        "pro": {"enabled": True, "email": "SECRET"},
+                    },
+                },
+                "transport": {"probe_kind": "local_unified_forced_command"},
+            },
+            "gemini": {
+                "probe_ok": True, "account_ready": True,
+                "provider_error_category": "busy",
+                "account": {
+                    "logged_in": True, "default_model": "gemini-3-8-flash-high",
+                    "models": {"gemini-3-8-flash-high": {
+                        "enabled": True, "verified": True, "reasoning_effort": "high",
+                    }},
+                    "quota": {
+                        "available": True, "source": "antigravity_cli_usage",
+                        "observed_at": timestamp, "stale": True,
+                        "five_hour": {"used_percent": 0, "remaining_percent": 100,
+                                      "resets_at": timestamp, "raw": "SECRET"},
+                    },
+                },
+                "transport": {"probe_kind": "local_unified_forced_command"},
+            },
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    bridges = read_health_snapshot(path, now=NOW)["bridges"]
+    claude = bridges["claude"]["account"]
+    assert claude["quota"] == {
+        "available": False, "reason": "requires_claude_ai_login",
+        "manual_check_url": "https://claude.ai/usage",
+    }
+    assert claude["default_model"] == "opus-5-5-high"
+    assert claude["models"] == {
+        "opus-5-5-high": {
+            "enabled": True, "verified": False, "cli_supported": True,
+            "selection_ready": False, "reasoning_effort": "high",
+        },
+        "fable-5-2-high": {"enabled": False, "verified": False},
+    }
+    gemini = bridges["gemini"]["account"]
+    assert gemini["default_model"] == "gemini-3-8-flash-high"
+    assert gemini["models"]["gemini-3-8-flash-high"] == {
+        "enabled": True, "verified": True, "reasoning_effort": "high",
+    }
+    assert gemini["quota"]["five_hour"] == {
+        "used_percent": 0, "remaining_percent": 100, "resets_at": timestamp,
+    }
+    assert gemini["quota"]["observed_at"] == timestamp
+    assert gemini["quota"]["stale"] is True
+    assert bridges["gemini"]["provider_error_category"] == "busy"
+    assert "SECRET" not in json.dumps(bridges)
 
 
 def test_health_snapshot_age_is_unknown_without_timestamp(tmp_path):
@@ -417,6 +496,88 @@ def test_static_assets_are_local_and_dom_safe():
     assert "https://" not in source
     # SVG's XML namespace is an identifier, not an outgoing asset request.
     assert "http://" not in source.replace("http://www.w3.org/2000/svg", "")
+
+
+def test_quota_card_dom_hides_unknown_and_logged_out_cache_but_shows_real_zero():
+    script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+class Element {
+  constructor(tag) { this.tag = tag; this.textContent = ""; this.children = []; }
+  get firstChild() { return this.children[0] || null; }
+  appendChild(child) { this.children.push(child); return child; }
+  removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
+  setAttribute(name, value) { this[name] = value; }
+  addEventListener() {}
+}
+const ids = new Map();
+const document = {
+  getElementById(id) {
+    if (!ids.has(id)) ids.set(id, new Element(id));
+    return ids.get(id);
+  },
+  createElement(tag) { return new Element(tag); },
+};
+const source = fs.readFileSync(process.argv[1], "utf8").replace(
+  /await loadDashboard\(\);\s*$/, ""
+);
+const context = { document };
+vm.runInNewContext(
+  source + "\nglobalThis.healthTest = { healthCard, renderHealth };",
+  context
+);
+const { healthCard, renderHealth } = context.healthTest;
+const health = document.getElementById("health-grid");
+function texts(element) {
+  return [element.textContent, ...element.children.flatMap(texts)].filter(Boolean);
+}
+healthCard("claude", {
+  probe_ok: true,
+  account_ready: false,
+  transport: { probe_kind: "local_unified_forced_command" },
+  account: { logged_in: false, quota: {
+    available: true, five_hour: { used_percent: 63 }, stale: true
+  } },
+}, null);
+let output = texts(health.children[0]);
+assert.ok(output.includes("统一接口正常"));
+assert.ok(output.includes("远端尚未登录，额度当前未知。请在服务器完成登录后刷新。"));
+assert.ok(!output.some(value => value.includes("63%")));
+assert.ok(!output.some(value => value.includes("额度数据较旧")));
+
+healthCard("claude", {
+  probe_ok: false,
+  transport: { probe_kind: "local_unified_forced_command" },
+  account: { logged_in: null, quota: { available: false } },
+}, null);
+output = texts(health.children[1]);
+assert.ok(output.includes("统一接口失败"));
+assert.ok(output.includes("暂未取得 Claude 额度，请等待远端登录或下一次监测更新。"));
+
+healthCard("claude", {
+  probe_ok: true,
+  transport: { probe_kind: "local_unified_forced_command" },
+  account: { logged_in: true, quota: {
+    available: true, stale: true, five_hour: { used_percent: 0 }
+  } },
+}, null);
+output = texts(health.children[2]);
+assert.ok(output.includes("0%"));
+assert.ok(output.includes("额度数据较旧，请以官方账户页面为准。"));
+assert.ok(!output.some(value => value.includes("暂未取得 Claude 额度")));
+
+renderHealth({ health: {
+  bridges: {}, system: { workers: { claude: 2, gemini: 3 } }
+}, subscriptions: {} });
+const runtime = document.getElementById("system-health");
+assert.equal(
+  texts(runtime).filter(value => value.includes("旧入口 worker（不含统一网关）")).length,
+  2
+);
+"""
+    static = Path(__file__).parents[1] / "src/mcp_audit_dashboard/static/app.js"
+    subprocess.run(["node", "-e", script, str(static)], check=True, capture_output=True, text=True)
 
 
 def test_aggregation_does_not_silently_truncate_at_twenty_thousand(tmp_path):

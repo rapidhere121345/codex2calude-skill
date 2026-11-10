@@ -1,501 +1,107 @@
-# claude-research-mcp
+# Remote Research MCP
 
-Private, restricted stdio MCP bridge for running Claude Code research jobs on a
-remote server. Codex starts it through SSH; there is no HTTP listener and no
-Tailscale dependency.
+One Skill, one MCP, explicit provider and model selection.
 
-The bridge exposes exactly seven tools:
+This is a **breaking upgrade** from the separate Claude/Gemini research clients.
+It does not emulate old tool names or import old conversations. Old data is not
+deleted. Existing provider accounts and OAuth homes remain separate on the VPS.
 
-- `claude_status()` — sanitized CLI, login, subscription, model-policy, and
-  best-effort Opus quota status.
-- `claude_once(...)` — one independent query.
-- `claude_start(...)` — start a logical task with an optional human title and
-  return an opaque `conversation_id`.
-- `claude_list_conversations()` — list the current principal's conversations.
-- `claude_export_conversation(conversation_id)` — return readable user and
-  assistant content for identifying or reviewing one of those conversations.
-- `claude_continue(conversation_id, ...)` — resume that task with its original
-  model and web policy.
-- `claude_close(conversation_id)` — close the bridge mapping. It does not erase
-  the Claude-side transcript, but further MCP continuation is rejected.
+## Client
 
-## Gemini Research companion
+Install only [`skills/remote-research`](skills/remote-research/SKILL.md).
+Partner upgrade instructions:
+[`docs/PARTNER_REMOTE_RESEARCH_UPGRADE.md`](docs/PARTNER_REMOTE_RESEARCH_UPGRADE.md).
 
-This repository also contains the `gemini-research` Skill and `gemini_research`
-MCP server. It keeps the Claude bridge's seven-tool interface, with a separate
-VPS service account, state directory, SSH principal, and owner/partner keys. The
-backend is the official **Antigravity CLI (`agy`) 1.2.14 or newer**. It uses the
-owner's Google OAuth subscription on the VPS; clients never receive Google
-credentials. The deployment does not select API-key or Vertex billing.
-
-Each raw Gemini CLI stream defaults to 4 MiB (4,194,304 bytes) and can be capped
-at up to 16 MiB; the final result remains character-based and likewise defaults
-to 4,194,304 with a 16,777,216-character maximum.
-
-- `gemini_status()` — CLI version, authentication availability, and model policy;
-  it uses the CLI's read-only `/usage` command without a model turn. Quota remains
-  unavailable when the bridge cannot safely normalize the CLI's quota schema.
-- `gemini_once(...)` — one independent query.
-- `gemini_start(...)` — start a titled task and return an opaque bridge UUID.
-- `gemini_list_conversations()` — list the current principal's tasks.
-- `gemini_export_conversation(conversation_id)` — export the bridge's stored
-  user/assistant turns for an owned task.
-- `gemini_continue(conversation_id, ...)` — resume the owned native conversation.
-- `gemini_close(conversation_id)` — reject further continuation while retaining
-  readable history.
-
-Install `skills/gemini-research` from the repository's `main` branch:
-[GitHub](https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/gemini-research).
-The canonical partner flow fetches the Skill there and does not require a Skill
-ZIP; the owner sends only the dedicated private partner-access ZIP separately
-through a controlled channel. The handoff is in
-[`examples/PARTNER_SETUP_GEMINI.zh-CN.md`](examples/PARTNER_SETUP_GEMINI.zh-CN.md).
-The installed Skill uses `scripts/setup_client.py` for key import,
-MCP registration, and a read-only `gemini_status` handshake. All research and
-acceptance inference go through the host-loaded `gemini_research` MCP tools; if
-that catalog has not refreshed yet, wait for the host rather than using a
-bundled command-line client.
-The registration wraps the same pinned, dedicated-key SSH command in
-`scripts/mcp_ssh_reconnect.py`. If that transport dies, the proxy keeps Codex's
-stdio connection open, respawns SSH, replays only the MCP initialize handshake,
-and then serves later requests. A `tools/call` that was in flight when the
-transport died receives an explicit unknown-result error; the proxy never
-blindly replays such a call because the server may already have executed it.
-The reconnect backoff and offline queue timeout use
-`GEMINI_MCP_RECONNECT_DELAYS` and `GEMINI_MCP_RECONNECT_QUEUE_TIMEOUT`.
-Updating an already authorized partner reuses that partner's installed
-MCP-dedicated key and existing MCP registration. The Skill installer refuses
-an existing destination: download into a fresh staging directory, then back up
-the installed Skill outside the skills directory and replace it with the
-validated new copy. Do not overlay the old directory, which could retain the
-obsolete `scripts/call_tool.py`. Resolve the partner's `CODEX_HOME` to a real directory when
-it is a symlink, then run `python3 scripts/setup_client.py --principal partner
---codex-home <resolved-codex-home> --verify` from the updated Skill. Do not
-import, delete, repackage, print, or read the existing private key. Finally
-wait for the host tool refresh and use native `gemini_status` and
-`gemini_once` for acceptance.
-The production paths are:
-
-```text
-/opt/gemini-research-mcp/releases/<release>
-/opt/gemini-research-mcp/current -> releases/<release>
-/opt/antigravity/current/bin/agy
-/var/lib/gemini-mcp/research
-/var/lib/gemini-mcp/.gemini/config/agents/
-/var/lib/gemini-mcp/.gemini/antigravity-cli/settings.json
-/etc/ssh/gemini-mcp-authorized_keys
-/etc/ssh/sshd_config.claude-mcp  # shared TCP 22022 listener
-```
-
-`deploy/gemini-agents/` contains the two task-mode definitions and independent
-VPS CLI permission settings. The bridge validates CLI init format and required
-web capabilities (`search_web` and `read_url_content` for `use_web=true`), not
-a tool-catalogue subset. CLI tool execution uses VPS `always-proceed` settings
-without an ordinary-tool allowlist. Trusted owner and partner may request
-remote files, commands, and other ordinary tools for explicit tasks.
-`use_web=false` requests no web research; it is not technical isolation from
-web, files, or shell. The initial catalogue proves neither effective tool
-permissions nor tool-context pruning. Do not let `agy` spawn or delegate other
-AI agents or tasks, or use commands to switch AI CLIs/models to bypass the VPS
-model policy; collaboration remains with the outer Codex native subagents. Ordinary
-prompts use official NDJSON stdin with slash expansion disabled. Timeout and
-output bounds are enforced by the bridge. Research calls default to 50 turns
-and 900 seconds; `max_turns` is retained for interface compatibility and is
-not a native `agy` limit. Native conversation IDs stay on
-the VPS. Successful task turns are stored privately for export, separate from
-the text-free audit records.
-
-Normal callers should omit `max_turns` and `timeout_seconds`; explicit values
-are reserved for short tasks, strict deadlines, or debugging.
-
-Authenticate only on the VPS by running `agy` as `geminimcp`, selecting Google
-OAuth, and completing the [official remote SSH authorization
-flow](https://antigravity.google/docs/cli/install/#remote-ssh-oauth-flow).
-A personal login to the retired `gemini` CLI cannot serve this deployment.
-Owner and partner share the account's plan quota; their SSH keys are separate,
-and bridge session mappings and queries are principal-filtered. With file/shell tools,
-the shared VPS service account does not provide filesystem isolation between
-them. Google credentials, tokens, and keys remain on the VPS and are not
-delivered to partners; no local provider login is required. Public clients
-connect on the existing TCP 22022 SSH listener; a user-specific
-forced command routes the `geminimcp` account to the separate Gemini deployment.
-The partner key grants no direct SSH shell or arbitrary SSH command execution;
-Gemini's authorized CLI tools can still execute remote commands.
-The retired 22023 listener is disabled and its VPS firewall rules removed.
-
-The VPS fixes every Gemini inference invocation to `gemini-3.8-flash-high` with
-`--effort high`, verified against the service account's `agy models` catalogue.
-The existing logical name `pro` remains a compatibility value for installed
-clients. Caller model strings and old conversation model snapshots do not
-select the CLI model: one-shot queries, new conversations, and continuations
-all use the same server-side Flash policy. Returned model metadata is checked
-against that effective policy; an empty `actual_models` remains unknown rather
-than being filled from configuration.
-
-This is a VPS-only upgrade. The seven MCP tools and their schemas, client MCP
-registration, and installed Skill stay unchanged. The root-owned
-`/etc/gemini-mcp-model-policy.conf` retains its legacy `GEMINI_PRO_*` variable
-names for the existing launcher. Deploy the backend patch and recycle idle
-Gemini MCP server processes so existing reconnecting clients load it. Owner
-and partner share the fixed selection; there is no automatic model/provider
-fallback or change to Google OAuth, API-key, or Vertex billing.
-
-`gemini_status.availability` distinguishes an eligible account from an
-official region restriction, missing authentication, or an unknown diagnostic.
-Model binding and a successful OAuth login are separate from service eligibility
-and a successful inference test. The installer refuses to declare verification
-complete while availability is blocked or unknown.
-
-Acceptance completed on 2026-10-02 with official `agy` 1.2.14 personal OAuth.
-Owner and a freshly installed partner-principal client both passed real MCP
-queries, native continuation, list/export/close, and cross-principal rejection.
-Remote command execution and file writing were verified on the VPS; web mode
-read an official source successfully. That acceptance used a policy binding `pro` to
-`gemini-3.1-pro-high` with `high` effort; do not infer a currently billed model
-when usage metadata is empty. The shared TCP 22022 listener was unchanged. CLI
-init lists a global catalogue, including names unavailable to the execution
-registry; task definitions include the supported ordinary tools. The partner
-fetches the Skill from GitHub `main`; the owner sends the dedicated access-key
-ZIP separately.
-
-The deployment sets `useG1Credits=false` (also the default). Account AI Credit
-Overages `Never` has not yet been confirmed, so baseline-plan-only usage is not
-established: personal OAuth does not by itself disable overage credits.
-Quota exhaustion stops the task.
-See the [official quota and overage policy](https://antigravity.google/docs/plans/).
-
-## Hand this repository to another Codex
-
-Before sending the repository URL, the owner must grant the partner Read access
-to the private repository and pre-authorize a dedicated partner key. Deliver
-the passphrase-less private key only through a controlled one-to-one channel;
-it is a bearer credential for this MCP endpoint. Then send this prompt together
-with the key file:
-
-```text
-请使用 $skill-installer 从
-https://github.com/rapidhere121345/codex2calude-skill/tree/main/skills/claude-research
-安装 claude-research Skill。不要读取、展示、上传或转发我附带的私钥内容。
-安装后在 Skill 目录运行 python3 scripts/setup_client.py --principal partner
---import-key <我附带的私钥绝对路径> --verify。脚本必须显示 pre-authorized
-import 且验证恰好七个 claude 工具；成功后通过系统安全删除机制删除交付私钥
-和压缩包，并提醒我重启 Codex。遇到已有密钥、host pin 或 MCP 配置冲突时停止，
-不要覆盖或绕过校验。
-```
-
-The setup is otherwise local and does not require Tailscale. `--import-key`
-copies the key to the dedicated destination with mode 0600, rejects symlinks
-and overwrites, derives and validates its public key, and never prints the
-private key. The delivery copy is intentionally retained until verification
-succeeds, after which it should be securely deleted. There is no public
-self-enrollment endpoint.
-
-Prefer the `$skill-installer` path shown above. If it is unavailable, a partner
-with Git repository access may clone this repository and copy only
-`skills/claude-research` into `$CODEX_HOME/skills/claude-research`. If the
-partner has neither GitHub CLI nor `$skill-installer`, the owner may send that
-skill directory alone through a private channel. Do not include credentials or
-unrelated repository files. Without a pre-authorized delivered key, the
-generated-key fallback prints only a `.pub` key and deliberately stops for
-administrator authorization.
-
-## Conversation and model policy
-
-Use one Claude session per logical task. `claude_start` stores the native Claude
-session ID only on the server and returns a separate UUID. In a later Codex
-session, list the current principal's conversations first and select the MCP
-`conversation_id`; never ask for or expose the native Claude session ID. List
-and export are principal-isolated, and export can be used to identify or review
-a conversation from its readable user/assistant content. A continuation must
-come from the same SSH principal (`owner` or `partner`). Close only a genuinely
-finished conversation: closing retains the transcript but rejects further MCP
-continuation.
-
-The production wrapper currently enables only logical model `opus`, mapped to
-Claude Code's `opus` alias. Every successful answer must report an actual Opus
-model in Claude's usage metadata; otherwise the call fails instead of silently
-accepting a fallback. The model is fixed when a conversation starts.
-
-Fable 5.1 can be enabled later, after both the account and Claude Code support
-it, by adding this entry to `CLAUDE_MCP_MODELS`:
-
-```json
-{"opus":{"cli_value":"opus","family":"opus","min_cli_version":"2.1.236"},"fable":{"cli_value":"fable","family":"fable","min_cli_version":"2.1.257"}}
-```
-
-Do not add Fable to the allowlist merely to probe entitlement: non-interactive
-Claude Code calls can consume usage before reporting an account-level problem.
-
-`claude_status.opus_quota` reports only an observation emitted through Claude
-Code's documented [statusline `rate_limits`](https://code.claude.com/docs/en/statusline)
-field. The capture helper discards
-the rest of the statusline payload and stores only `five_hour`, `seven_day`, and
-an observation time. The bridge never reads `~/.claude/.credentials.json`,
-never calls an undocumented usage endpoint, and never sends a model request to
-obtain quota data. Each official window is independently optional. A valid
-window contains used/remaining percentages and its reset time; `source`,
-`observed_at`, `stale`, and `age_seconds` make provenance explicit.
-
-Claude Code may not invoke a configured statusline during non-interactive `-p`
-runs. Therefore `available: false` is an expected safe result until a recent
-interactive statusline observation exists. It means unknown, not zero usage or
-unlimited capacity; use the returned `https://claude.ai/usage` URL for the
-manual check.
-
-## Security boundary
-
-- SSH on a dedicated public port is transport only. Each public key is forced
-  into this MCP process and cannot obtain a shell, PTY, forwarding, SFTP, or an
-  arbitrary command.
-- The existing administrative SSH port can remain restricted to Tailscale.
-- The MCP client cannot choose an executable, cwd, shell command, file path, or
-  Claude tool allowlist.
-- Prompts are sent on stdin and never placed in process argv or audit records.
-- Claude runs with `--permission-mode dontAsk`, an empty MCP config, and no
-  browser integration. `use_web=true` enables exactly `WebSearch,WebFetch`;
-  `false` enables no Claude tools.
-- Calls run in new process groups. Timeouts and cancellation stop Claude and
-  its descendants.
-- SQLite enforces principal ownership. A per-principal, per-conversation
-  rolling burst guard protects rapid `claude_continue` calls; the guard check
-  and execution reservation happen in one SQLite write transaction. A
-  process-wide flock limits shared-account concurrency.
-- Responses and diagnostics are bounded. Raw Claude stderr is not returned.
-- CLI failures are classified from bounded error envelopes on stdout and from
-  stderr into fixed, sanitized categories. Only allowlisted error categories
-  and explicitly structured HTTP status codes may cross the bridge; raw error
-  messages, prompts, account identifiers, paths, and credentials do not cross
-  the bridge or enter the structured audit table. Failed CLI output can be
-  retained separately in private, bounded server-side diagnostic files; see
-  the operator-only diagnostics section below.
-  A successful `claude_status` checks CLI version and reported login state, not
-  inference availability or model entitlement. Use one minimal `claude_once`
-  request to verify the inference path; do not repeatedly retry an unchanged
-  failure or interpret missing quota observations as exhausted quota.
-- Quota status never reads OAuth credentials and never calls an undocumented
-  usage endpoint. It only reads the bounded, owner-controlled sanitized
-  statusline observation, and reports unavailable rather than guessing.
-- The Claude login and state live under the dedicated, password-locked
-  `claudemcp` service account in `/var/lib/claude-mcp`; neither SSH principal
-  receives its OAuth material or a server shell.
-- The root-owned runtime is pinned, and Claude children receive an exact
-  environment allowlist with SSH, proxy, API-key, desktop-session, and client
-  variables removed. Claude Code's documented
-  [privacy environment controls](https://code.claude.com/docs/en/env-vars)
-  disable nonessential telemetry, feedback, crash reporting, marketplace
-  auto-install, all CLI updates, and Claude.ai MCP connector loading.
-- Only MCP/Claude traffic originates from the VPS. A partner's source address
-  is visible to the VPS SSH daemon and its logs, but is not forwarded in the
-  Claude child environment. Prompts, pasted identifiers, and URLs can still
-  disclose information by content, so callers must keep them scoped.
-
-Web content is still untrusted. Prompt injection can influence research output,
-so important findings should be verified.
-
-## Operator-only error diagnostics
-
-Tool invocations receive a server-generated, opaque `request_id`. The same
-identifier is returned to the caller and stored in `audit_log`, together with
-allowlisted `error_category`, `http_status`, and `exit_code` when available.
-The identifier is not a Claude-native session ID. Older audit rows retain NULL
-diagnostic fields: the upgrade cannot reconstruct historical error details.
-Requests rejected by the MCP protocol or argument schema before entering a tool
-handler may not have an application audit record.
-
-The structured audit table never stores prompts, answers, raw exception text,
-stdout, stderr, account identifiers, or client IP addresses. `duration_ms`
-remains total tool time, including queueing, not pure model latency. Unknown
-errors remain `unknown`; a successful status check does not establish that a
-model call or a particular resumed conversation will succeed.
-
-At the owner's explicit request, captured **failed** CLI stdout/stderr is also
-retained under:
-
-```text
-/var/lib/claude-mcp/research/state/error-diagnostics/<principal>/<request_id>.json
-```
-
-These files are sensitive: unredacted error output can contain private content
-or credentials echoed by an upstream component. Directories are mode `0700`,
-files are mode `0600`, and they are not exposed through MCP, Git, or the partner
-SSH key. No successful response, explicit prompt, environment dump, or OAuth
-credential file is deliberately copied into these diagnostics. Each output
-stream is bounded to 64 KiB and records whether truncation occurred. Each
-principal's store is limited to 100 files and 20 MiB; older files are removed
-when these limits are reached. Retention cleanup removes files older than seven
-days on writes and through the deployed daily maintenance timer (so an idle
-store can retain a file until the next daily sweep). Only regular
-UUID-named diagnostic files inside the private store are eligible for cleanup.
-
-On a failure, the partner should send the **request ID and sanitized error** to
-the operator, not a key or a transcript. The operator first correlates the audit
-record, then inspects the matching private file only if necessary. Do not paste
-raw diagnostic files into chat or research reports. A failure before CLI output
-exists, a storage failure, or truncation can leave incomplete raw evidence.
-The bridge still exposes exactly seven tools and grants no new partner access.
-
-The retention units are `claude-mcp-error-retention.service` and
-`claude-mcp-error-retention.timer`; the one-shot service has no network access
-and can write only the private diagnostic store. A rollback to a release that
-predates this helper must also stop/disable this timer. Retained evidence must
-not be deleted merely to roll back executable code. Existing MCP connections
-can keep an already-loaded older server after an atomic release switch; reconnect
-the MCP client to receive the new diagnostic fields. Do not interrupt an active
-research task just to refresh an idle client's tool connection.
-
-## Account and policy boundary
-
-Technical isolation does not grant permission to share a consumer Claude
-account. Anthropic's [Consumer Terms](https://www.anthropic.com/legal/consumer-terms)
-prohibit sharing login details or making an account available to another
-person, and use must come from a
-[supported location](https://www.anthropic.com/supported-countries). Keep the
-partner key disabled unless the account arrangement and every user's location
-are covered by an Anthropic-supported organization, team, API, or written
-authorization. This repository cannot make consumer-account sharing
-policy-compliant or ban-safe.
-
-## Install on the VPS
-
-The expected production paths are:
-
-```text
-/opt/claude-research-mcp/releases/<release>
-/opt/claude-research-mcp/current -> releases/<release>
-/opt/claude-code/2.1.236/claude
-/var/lib/claude-mcp/.claude
-/var/lib/claude-mcp/research
-/etc/ssh/authorized_keys/claude-mcp
-/etc/ssh/sshd_config.claude-mcp
-```
-
-Create a password-locked service account with no sudo membership. Its shell is
-needed only because OpenSSH executes the key's forced command through it:
+From the installed Skill directory:
 
 ```sh
-sudo useradd --system --create-home --home-dir /var/lib/claude-mcp --shell /bin/sh claudemcp
-sudo passwd --lock claudemcp
-sudo install -d -m 0700 -o claudemcp -g claudemcp /var/lib/claude-mcp/research
+python3 scripts/setup_client.py --client codex --principal partner --verify
+# For Devin, select --client devin instead.
 ```
 
-Copy each release into a new root-owned directory, build its `.venv`, and move
-the `current` symlink only after tests pass. Install Claude Code from its
-official distribution at the pinned root-owned path shown above; do not let the
-service account replace that binary. Authenticate Claude interactively as
-`claudemcp` from a trusted administrative console, never by distributing its
-OAuth files.
+Use the actual authorized principal and the existing dedicated research key.
+The server must authorize that key for the unified account before migration.
+No provider login, private-key transfer, API-key billing, or backend Python
+dependency installation is required on a partner computer.
 
-Production retains Claude transcripts for 365 days. Configure the sanitized
-statusline capture at the same time; preserve every unrelated settings key:
+The installer preserves unrelated settings, takes protected backups, verifies
+the new transport, and then disables recognized obsolete MCP entries. Refresh
+the host after active turns finish; editing files does not replace running
+proxies. Archive the two old Skills outside active discovery.
 
-```sh
-sudo -u claudemcp -H python3 - <<'PY'
-import json
-import os
-import tempfile
-from pathlib import Path
+## Unified API
 
-path = Path.home() / ".claude" / "settings.json"
-path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-if path.is_symlink():
-    raise SystemExit(f"refusing symlink: {path}")
-data = {}
-if path.exists():
-    if not path.is_file():
-        raise SystemExit(f"not a regular file: {path}")
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise SystemExit("settings.json must contain a JSON object")
-data["cleanupPeriodDays"] = 365
-data["statusLine"] = {
-    "type": "command",
-    "command": "/opt/claude-research-mcp/current/scripts/capture-statusline-rate-limits.py",
-}
-fd, temporary_name = tempfile.mkstemp(prefix=".settings.json.", dir=path.parent)
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(data, stream, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.chmod(temporary_name, 0o600)
-    os.replace(temporary_name, path)
-finally:
-    try:
-        os.unlink(temporary_name)
-    except FileNotFoundError:
-        pass
-print("configured retention and sanitized statusline capture")
-PY
-```
+MCP name: `remote_research`. Exactly seven tools:
 
-The statusline helper needs `CLAUDE_MCP_STATUSLINE_OBSERVATION` in the
-interactive Claude environment to write a sample. The forced MCP wrapper sets
-it automatically, but non-interactive Claude may not render a statusline.
+| Tool | Selection |
+| --- | --- |
+| `research_status` | One provider, or both |
+| `research_once` | Provider and optional model |
+| `research_start` | Provider and optional model; creates a unified conversation |
+| `research_continue` | Owned unified conversation ID; original selection retained |
+| `research_list_conversations` | Provider; new unified conversations only |
+| `research_export_conversation` | Owned unified conversation ID |
+| `research_close` | Owned unified conversation ID; retains transcripts |
 
-Install the dedicated SSH daemon configuration only after inserting real public
-keys into a private copy of `examples/authorized_keys` (never commit real keys):
+Providers are `claude` and `gemini`. A missing model uses that provider's
+server-managed default. There is no automatic provider/model fallback.
 
-```sh
-sudo install -d -m 0755 -o root -g root /etc/ssh/authorized_keys
-sudo install -m 0644 -o root -g root examples/authorized_keys /etc/ssh/authorized_keys/claude-mcp
-sudo install -m 0644 -o root -g root deploy/sshd_config.claude-mcp /etc/ssh/sshd_config.claude-mcp
-sudo install -m 0644 -o root -g root deploy/claude-mcp-sshd.service /etc/systemd/system/claude-mcp-sshd.service
-sudo install -d -m 0755 -o root -g root /etc/systemd/system/gemini-mcp-sshd.service.d
-sudo install -m 0644 -o root -g root deploy/gemini-mcp-runtime-dir.conf /etc/systemd/system/gemini-mcp-sshd.service.d/runtime-dir.conf
-sudo /usr/sbin/sshd -t -f /etc/ssh/sshd_config.claude-mcp
-sudo systemctl daemon-reload
-sudo systemctl enable --now claude-mcp-sshd.service
-sudo systemctl enable --now gemini-mcp-sshd.service
-```
+Intended catalog:
 
-Then allow TCP 22022 in UFW and in the Lightsail networking firewall. Do not
-open administrative port 22 publicly for this bridge.
+- `claude` / `opus-5-5-high`
+- `claude` / `fable-5-2-high`
+- `gemini` / `gemini-3-8-flash-high`
 
-## Client setup
+`research_status` is authoritative for enabled selections, account login and
+verification state. Fable is a disabled candidate until the remote account
+passes real verification. A name in configuration is not proof of availability.
+Gemini's deployed preset is Flash, not an incorrectly relabeled Pro model.
 
-For the painless partner path, the owner creates a dedicated passphrase-less
-ED25519 pair, binds the public half to the `partner` forced command, and sends
-the private delivery copy through a controlled channel. The partner runs:
+Normal request defaults are `use_web=true`, `max_turns=50`, and
+`timeout_seconds=900`. Provider-specific execution constraints still apply.
+Native provider session IDs and credentials never belong in client responses.
 
-```sh
-python3 scripts/setup_client.py --principal partner \
-  --import-key /absolute/path/to/delivered-private-key --verify
-```
+## Shared Connection
 
-The script pins the VPS host key and adds the exact stdio entry to the Codex
-config. After successful verification, delete the delivery source and restart
-Codex. If no key was delivered, running the script without `--import-key`
-generates a dedicated local pair and prints only the `.pub` fallback for manual
-authorization.
+All local agent facades with the same user, principal, identity and pinned
+target share one broker and one persistent SSH/MCP connection. Requests and
+cancellation are isolated by client; reused JSON-RPC IDs cannot cross agents.
+The connection stays alive while clients are attached and is released after
+the final client leaves.
 
-## Revocation
+A failed in-flight call is never replayed. Transport recovery privately repeats
+only the MCP handshake. Unknown results remain unknown.
 
-Remove one person's single line from
-`/etc/ssh/authorized_keys/claude-mcp`. Their existing connection may finish; to
-cut it immediately, terminate that principal's active MCP/Claude process. The
-other key and Claude login do not need to change.
+The local broker binds loopback only and authenticates clients with a protected
+random token. There is no new public HTTP API.
 
-## Local development
+## Server
 
-```sh
-./scripts/install.sh
-.venv/bin/python -m pytest -q
-```
+The unified forced-command account routes calls through a restricted Unix-socket
+dispatcher into the original provider accounts. OAuth credentials are neither
+merged nor exported. Existing SSH `NoNewPrivileges` hardening is preserved.
+Provider helper processes are short-lived rather than per-agent idle workers.
 
-Configuration is via `CLAUDE_MCP_*`; see `scripts/stdio-forced-command.sh` for
-the production defaults. There is no hourly bridge call quota.
-`CLAUDE_MCP_CONTINUE_BURST_LIMIT` defaults to 50 and is bounded to 1–100;
-`CLAUDE_MCP_CONTINUE_BURST_WINDOW_SECONDS` defaults to 60 and is bounded to
-1–3600 seconds. The burst guard is isolated by principal and MCP conversation;
-blocked attempts are audited but do not enter the rolling count. Large package
-caches remain inside the project.
+Architecture and API contract:
+[`docs/REMOTE_RESEARCH_DESIGN.md`](docs/REMOTE_RESEARCH_DESIGN.md).
+Catalog and dispatcher unit are in `deploy/`; model activation is an operator
+decision, not a client override.
 
+Quota observations distinguish logged out, unknown, stale and available.
+Transport verification is separate from provider login and model inference
+acceptance. Do not interpret missing observations as zero usage or unlimited
+quota.
 
-## 运维与空闲回收（2026-10）
+## Development
 
-SSH worker 默认空闲 30 分钟释放，客户端下一次真实请求才重连，协议 ping 不续命。
-服务端空闲保护须与新版客户端代理同时使用；已有客户端进程需重启。
+The server uses Python 3.12 and the repository's MCP dependencies. Client
+transport/setup scripts use Python 3.11+ and standard-library modules.
+OpenSSH and a previously authorized dedicated research key are required.
 
-- [Partner 更新说明](docs/PARTNER_UPDATE_20261009.md)
-- [只读审计页与账号风险审查](docs/SECURITY_REVIEW_20261009.md)
+Tests use fake transports and fake provider CLIs by default; they must not
+silently consume a real provider subscription. Real acceptance runs on the VPS
+through the native unified MCP after explicit deployment and login.
+
+The prior independent interfaces are archived in
+[`docs/LEGACY_README.md`](docs/LEGACY_README.md). Its relative paths refer to the
+original repository root; it is not the supported client upgrade guide.

@@ -198,6 +198,9 @@ class ConversationRecord:
     created_at: str
     last_activity_at: str
     closed_at: str | None
+    model_cli_value: str | None = None
+    model_family: str | None = None
+    reasoning_effort: str | None = None
 
 
 @contextmanager
@@ -242,7 +245,10 @@ def initialize(database_path: Path) -> None:
               created_at TEXT NOT NULL,
               closed_at TEXT,
               title TEXT,
-              last_activity_at TEXT
+              last_activity_at TEXT,
+              model_cli_value TEXT,
+              model_family TEXT,
+              reasoning_effort TEXT
             );
             CREATE TABLE IF NOT EXISTS audit_log (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -287,6 +293,9 @@ def initialize(database_path: Path) -> None:
                 "closed_at, created_at) "
                 "WHERE last_activity_at IS NULL"
             )
+        for column in ("model_cli_value", "model_family", "reasoning_effort"):
+            if column not in columns:
+                db.execute(f"ALTER TABLE conversations ADD COLUMN {column} TEXT")
         audit_columns = {
             row["name"]
             for row in db.execute("SELECT name FROM pragma_table_info('audit_log')")
@@ -339,6 +348,10 @@ def create_conversation(
     model: str,
     use_web: bool,
     title: str | None = None,
+    *,
+    model_cli_value: str | None = None,
+    model_family: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> ConversationRecord:
     conversation_id = str(uuid.uuid4())
     created_at = _now()
@@ -346,8 +359,9 @@ def create_conversation(
         db.execute(
             "INSERT INTO conversations "
             "(conversation_id, principal, claude_session_id, model, use_web, "
-            "created_at, closed_at, title, last_activity_at) "
-            "VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?)",
+            "created_at, closed_at, title, last_activity_at, model_cli_value, "
+            "model_family, reasoning_effort) "
+            "VALUES (?, ?, NULL, ?, ?, ?, NULL, ?, ?, ?, ?, ?)",
             (
                 conversation_id,
                 principal,
@@ -356,6 +370,9 @@ def create_conversation(
                 created_at,
                 title,
                 created_at,
+                model_cli_value,
+                model_family,
+                reasoning_effort,
             ),
         )
     return ConversationRecord(
@@ -369,6 +386,9 @@ def create_conversation(
         created_at,
         created_at,
         None,
+        model_cli_value,
+        model_family,
+        reasoning_effort,
     )
 
 
@@ -385,6 +405,9 @@ def _record(row: sqlite3.Row) -> ConversationRecord:
         row["created_at"],
         row["last_activity_at"],
         row["closed_at"],
+        row["model_cli_value"],
+        row["model_family"],
+        row["reasoning_effort"],
     )
 
 
@@ -394,7 +417,8 @@ def get_conversation(
     with transaction(database_path) as db:
         row = db.execute(
             "SELECT conversation_id, principal, claude_session_id, model, use_web, "
-            "created_at, closed_at, title, last_activity_at "
+            "created_at, closed_at, title, last_activity_at, model_cli_value, "
+            "model_family, reasoning_effort "
             "FROM conversations WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchone()

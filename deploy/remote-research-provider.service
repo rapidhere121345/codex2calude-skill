@@ -1,0 +1,32 @@
+[Unit]
+Description=Restricted local provider dispatcher for unified remote research
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=researchmcp
+RuntimeDirectory=remote-research
+RuntimeDirectoryMode=0750
+UMask=0007
+Environment=PYTHONPATH=/opt/remote-research-mcp/current/src
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/remote-research-mcp/current/.venv/bin/python -m remote_research_mcp.privileged_rpc
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/claude-mcp /var/lib/gemini-mcp
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

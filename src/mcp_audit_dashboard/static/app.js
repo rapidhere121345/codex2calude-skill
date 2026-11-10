@@ -334,7 +334,8 @@ function healthCard(provider, bridge, subscription) {
   const readiness = node(card, "div", "readiness-row");
   if (Object.keys(bridge).length) {
     addStatus(readiness, bridge.account_ready, "账号可用", "账号不可用");
-    addStatus(readiness, bridge.probe_ok, "连接正常", "连接失败");
+    const unified = bridge.transport?.probe_kind === "local_unified_forced_command";
+    addStatus(readiness, bridge.probe_ok, unified ? "统一接口正常" : "连接正常", unified ? "统一接口失败" : "连接失败");
   } else node(readiness, "span", "status status-neutral", "等待状态更新");
   if (bridge.error_category) node(readiness, "span", "status status-warning", failureReason({error_category: bridge.error_category, status: "error"}));
   if (bridge.checked_at) node(card, "p", "metric-secondary", `检查：${timeLabel(bridge.checked_at)}（${localRelative(bridge.checked_at)}）`);
@@ -345,12 +346,18 @@ function healthCard(provider, bridge, subscription) {
   const account = bridge.account || {};
   const quota = account.quota || {};
   let renderedQuota = false;
-  for (const [field, title] of [["five_hour", "5 小时窗口"], ["seven_day", "7 天窗口"]]) {
-    renderedQuota = quotaWindow(card, title, quota[field]) || renderedQuota;
+  if (account.logged_in !== false && quota.available === true) {
+    for (const [field, title] of [["five_hour", "5 小时窗口"], ["seven_day", "7 天窗口"]]) {
+      renderedQuota = quotaWindow(card, title, quota[field]) || renderedQuota;
+    }
+    if (!renderedQuota) renderedQuota = quotaWindow(card, "配额", quota);
   }
-  if (!renderedQuota) renderedQuota = quotaWindow(card, "配额", quota);
-  if (quota.stale === true) node(card, "p", "notice notice-warning", "额度数据较旧，请以官方账户页面为准。");
-  if (provider === "gemini" && !renderedQuota) {
+  if (account.logged_in !== false && quota.stale === true) node(card, "p", "notice notice-warning", "额度数据较旧，请以官方账户页面为准。");
+  if (account.logged_in === false) {
+    node(card, "p", "token-empty", "远端尚未登录，额度当前未知。请在服务器完成登录后刷新。");
+  } else if (provider === "claude" && !renderedQuota) {
+    node(card, "p", "token-empty", "暂未取得 Claude 额度，请等待远端登录或下一次监测更新。");
+  } else if (provider === "gemini" && !renderedQuota) {
     node(card, "p", "token-empty", "暂未取得 Gemini 额度，请等待下一次监测更新。");
   }
 
@@ -390,9 +397,9 @@ function renderHealth(payload) {
   node(runtimeCard, "strong", "", "运行状态");
   const workers = node(runtimeCard, "div", "worker-row");
   const workerData = system.workers || {};
-  node(workers, "span", "worker-chip", `Claude 进程 ${count(workerData.claude)}`);
-  node(workers, "span", "worker-chip", `Gemini 进程 ${count(workerData.gemini)}`);
-  node(runtimeCard, "p", "metric-secondary", isNumber(system.idle_timeout_seconds) ? `空闲超时 ${duration(system.idle_timeout_seconds * 1000)}` : "空闲超时未记录");
+  node(workers, "span", "worker-chip", `Claude 旧入口 worker（不含统一网关） ${count(workerData.claude)}`);
+  node(workers, "span", "worker-chip", `Gemini 旧入口 worker（不含统一网关） ${count(workerData.gemini)}`);
+  node(runtimeCard, "p", "metric-secondary", isNumber(system.idle_timeout_seconds) ? `旧入口空闲超时 ${duration(system.idle_timeout_seconds * 1000)}` : "旧入口空闲超时未记录");
 }
 
 function appendTokenDetails(list, event) {
