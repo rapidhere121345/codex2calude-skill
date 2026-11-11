@@ -13,6 +13,22 @@ Exactly seven tools are exposed:
 `research_status`, `research_once`, `research_start`, `research_continue`,
 `research_list_conversations`, `research_export_conversation`, `research_close`.
 
+## User-Facing Use
+
+Users can simply name Gemini 3.8, Opus 5.5, or Fable 5.2. Map these names to
+the presets below; interpret informal names such as `opus55`, `fable52`, and
+`fabel52` without asking the user to supply provider names or API identifiers.
+Handle status checks, model selection, transport, and acceptance internally.
+Do not require users to run acceptance tests or understand CLI versions,
+evidence levels, or quota collectors before ordinary use.
+
+Return the research answer, not an infrastructure acceptance report. Explain
+verification details only when asked or when they materially affect a claim.
+If a request cannot complete, give a short, accurate explanation; retain
+sanitized diagnostic details for support without claiming success or silently
+switching models. A provider refusal must remain a refusal, not a reason to
+retry through a different model.
+
 Do not substitute an auxiliary command-line research client, unrestricted SSH,
 or a local provider login for these native tools. Missing tools in the current
 host process require a safe tool-catalog refresh, not repeated installation.
@@ -51,10 +67,10 @@ The intended public presets are:
 - Claude `fable-5-2-high`: native Fable 5.2 with explicit High effort.
 - Gemini `gemini-3-8-flash-high`: the currently deployed Gemini 3.8 Flash High.
 
-These are catalog names, not a promise that every preset is enabled. In
-particular, Fable stays disabled until the remote account is verified. Use only
-the enabled model selections returned by the actual server. Do not guess a
-native identifier from another provider's model menu.
+These are catalog names, not a promise that every preset is enabled. Use only
+the enabled model selections returned by the actual server. Activation and
+acceptance are server-side responsibilities, not tasks for the end user.
+Do not guess a native identifier from another provider's model menu.
 
 When the user does not select a provider, use Claude's server default. If it is
 unavailable, report that condition rather than silently selecting Gemini.

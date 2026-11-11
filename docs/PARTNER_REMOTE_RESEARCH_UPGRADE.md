@@ -4,6 +4,20 @@ This is a breaking client upgrade. There is one new Skill and one new MCP;
 there is no old tool-name emulation or historical conversation import.
 Provider credentials and desktop/management access are not part of this upgrade.
 
+## Message for Users
+
+After upgrading, simply ask your assistant to use **Gemini 3.8**, **Opus 5.5**,
+or **Fable 5.2**, followed by your question. You can choose a different model
+for a new task; ask to continue the same task for follow-up questions.
+
+There is one remote research entry now. You do not need to log in to the
+providers, run model tests, or handle server configuration. Your assistant
+handles the setup checks. Contact the service owner if it cannot complete a
+request; it will not silently switch to a different model.
+
+The procedure below is for the assistant performing the upgrade, not a checklist
+that an end user must work through manually.
+
 Distribute this prompt only after the owner publishes the reviewed commit and
 authorizes existing partner keys for the unified endpoint. The owner may supply
 an immutable commit SHA; use it instead of assuming a moving branch was reviewed.
@@ -93,10 +107,13 @@ Do preserve old files and configuration in protected rollback backups.
    command-line bridge client for inference acceptance. An unavailable provider
    stays explicitly pending; do not silently switch provider, model, or policy.
 
-10. Report the installed Git commit, host/principal, backup paths, seven-tool
-    verification, provider/model acceptance results, and any restart/pending
-    login requirement. Never include private key contents, provider tokens,
-    broker tokens, raw private logs, or full configuration files.
+10. Keep the installed Git commit, host/principal, backup paths, seven-tool
+    verification, provider/model acceptance results, and restart/pending login
+    requirements in a local upgrade report. Tell the user briefly whether the
+    upgrade is ready or needs the service owner's attention, and how to choose
+    the three models. Provide technical details only when requested or needed
+    for support. Never include private key contents, provider tokens, broker
+    tokens, raw private logs, or full configuration files.
 
 The new transport shares one long-lived SSH connection between local agents
 using the same user/principal/identity. Do not add an SSH connection per agent

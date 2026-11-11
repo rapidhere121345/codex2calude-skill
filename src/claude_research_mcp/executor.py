@@ -448,6 +448,8 @@ def child_environment() -> dict[str, str]:
     result["DISABLE_TELEMETRY"] = "1"
     result["DO_NOT_TRACK"] = "1"
     result["CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"] = "1"
+    result["CLAUDE_CODE_NO_MODEL_FALLBACK"] = "1"
+    result["CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK"] = "1"
     result["ENABLE_CLAUDEAI_MCP_SERVERS"] = "false"
     return result
 

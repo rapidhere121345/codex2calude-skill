@@ -46,6 +46,8 @@ def fake_claude(
         "if [ \"$1\" = auth ]; then cat >/dev/null; printf '{\"loggedIn\":true}\\n'; exit 0; fi\n"
         f"printf '%s\\n' \"$@\" > {binary}.argv\n"
         f"cat > {binary}.stdin\n"
+        f"printf '%s\\n%s\\n' \"$CLAUDE_CODE_NO_MODEL_FALLBACK\" "
+        f"\"$CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK\" > {binary}.model-env\n"
         f"printf '%s\\n' '{output}'\n",
         encoding="ascii",
     )
@@ -84,6 +86,8 @@ def test_native_model_and_effort_use_only_policy_and_never_prompt(
     settings = make_settings(tmp_path, {"opus55": OPUS})
     fake_claude(settings.claude_bin, "claude-opus-5-5")
     monkeypatch.setenv("CLAUDE_MCP_REASONING_EFFORT", "max")
+    monkeypatch.setenv("CLAUDE_CODE_NO_MODEL_FALLBACK", "0")
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "0")
     prompt = "secret --effort max --model claude-fable-5-2"
     result = asyncio.run(tool(settings, "claude_once")(prompt, model="opus55"))
     command = argv(settings.claude_bin)
@@ -92,6 +96,7 @@ def test_native_model_and_effort_use_only_policy_and_never_prompt(
     assert "--fallback-model" not in command
     assert prompt not in " ".join(command)
     assert Path(str(settings.claude_bin) + ".stdin").read_text() == prompt
+    assert Path(str(settings.claude_bin) + ".model-env").read_text().splitlines() == ["1", "1"]
     assert result["model"] == "opus55"
     assert result["configured_model"] == "claude-opus-5-5"
     assert result["reasoning_effort"] == "high"

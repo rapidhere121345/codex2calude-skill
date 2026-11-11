@@ -67,6 +67,8 @@ def test_child_environment_is_minimal_and_disables_nonessential_traffic(
     monkeypatch.setenv("LANG", "C.UTF-8")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
     monkeypatch.setenv("CLAUDE_MCP_STATUSLINE_OBSERVATION", "/state/quota.json")
+    monkeypatch.setenv("CLAUDE_CODE_NO_MODEL_FALLBACK", "0")
+    monkeypatch.setenv("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "0")
     monkeypatch.setenv("SSH_CLIENT", "203.0.113.10 12345 22022")
     monkeypatch.setenv("SSH_CONNECTION", "203.0.113.10 12345 10.0.0.1 22022")
     monkeypatch.setenv("XDG_SESSION_ID", "remote-session")
@@ -90,6 +92,8 @@ def test_child_environment_is_minimal_and_disables_nonessential_traffic(
         "DISABLE_TELEMETRY": "1",
         "DO_NOT_TRACK": "1",
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CLAUDE_CODE_NO_MODEL_FALLBACK": "1",
+        "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK": "1",
         "ENABLE_CLAUDEAI_MCP_SERVERS": "false",
     }
 

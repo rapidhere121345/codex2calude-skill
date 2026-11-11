@@ -2,6 +2,16 @@
 
 One Skill, one MCP, explicit provider and model selection.
 
+## Everyday Use
+
+Ask your assistant to use **Gemini 3.8**, **Opus 5.5**, or **Fable 5.2** for a
+task. The assistant selects the matching remote preset; no provider login,
+manual model acceptance, or knowledge of internal CLI details is required.
+For follow-up questions, ask it to continue the same research task.
+
+The three models remain separate choices. The service does not silently
+substitute another model when the selected model refuses or is unavailable.
+
 This is a **breaking upgrade** from the separate Claude/Gemini research clients.
 It does not emulate old tool names or import old conversations. Old data is not
 deleted. Existing provider accounts and OAuth homes remain separate on the VPS.
@@ -53,8 +63,8 @@ Intended catalog:
 - `gemini` / `gemini-3-8-flash-high`
 
 `research_status` is authoritative for enabled selections, account login and
-verification state. Fable is a disabled candidate until the remote account
-passes real verification. A name in configuration is not proof of availability.
+verification state. Model activation and acceptance are managed server-side;
+a name in configuration is not proof of availability.
 Gemini's deployed preset is Flash, not an incorrectly relabeled Pro model.
 
 The catalog distinguishes `execution_model` evidence (Claude) from explicitly
@@ -65,7 +75,8 @@ and pinned model/High effort without inventing `actual_models`. Its response
 includes `model_evidence.level="cli_session_binding"` and
 `backend_model_verified=false`; catalog `verified` stays false. This is a usable
 CLI-binding acceptance level, not independent proof of Google's backend model.
-Clients must preserve and report that distinction.
+Clients must preserve that distinction and explain it when relevant to a
+verification claim, rather than include infrastructure details in every answer.
 
 Normal request defaults are `use_web=true`, `max_turns=50`, and
 `timeout_seconds=900`. Provider-specific execution constraints still apply.
@@ -103,6 +114,10 @@ pointer to an installed, pinned native build. Updating a user's own
 build under `/opt/claude-code/`, update that pointer, and keep the previous
 build for rollback. Fable 5.2 requires Claude Code 2.1.290 or newer; its catalog
 minimum prevents an enabled preset from using an older CLI.
+
+Claude subprocesses must disable automatic model substitution, including
+refusal-triggered switching. A refusal remains a refusal on the selected model;
+it must not become a successful answer from another model.
 
 Quota observations distinguish logged out, unknown, stale and available.
 Transport verification is separate from provider login and model inference
