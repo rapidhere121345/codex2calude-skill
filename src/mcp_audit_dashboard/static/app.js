@@ -41,6 +41,40 @@ const tokenLabels = new Map([
   ["total_tokens", "上报合计"],
 ]);
 
+const quotaSourceLabels = new Map([
+  ["anthropic_rate_limit_headers", "Haiku 探测响应头（最多输出 1 个 token）"],
+  ["claude_code_statusline", "Claude Code 状态栏观测"],
+  ["claude_code_usage_command", "Claude Code /usage 命令"],
+  ["antigravity_cli_usage", "Antigravity CLI /usage"],
+]);
+
+const quotaReasonLabels = new Map([
+  ["unknown", "额度状态未知"],
+  ["statusline_observation_unavailable", "状态栏观测不可用"],
+  ["statusline_observation_expired", "状态栏观测已过期"],
+  ["invalid_statusline_observation", "状态栏观测无效"],
+  ["usage_command_unavailable", "额度命令不可用"],
+  ["usage_command_failed", "额度命令失败"],
+  ["invalid_usage_command_output", "额度命令输出无效"],
+  ["not_reported_by_agy", "agy 未上报额度"],
+  ["quota_cache_unavailable", "额度缓存不可用"],
+  ["quota_cache_invalid", "额度缓存无效"],
+  ["quota_cache_expired", "额度缓存已过期"],
+  ["quota_windows_expired", "额度观测窗口已过期"],
+  ["quota_observation_unavailable", "暂无额度观测"],
+  ["oauth_unavailable", "远端凭据不可用"],
+  ["oauth_invalid", "远端凭据无效"],
+  ["oauth_expired", "远端凭据已过期"],
+  ["probe_result_unknown", "上次探测结果未知"],
+  ["probe_timeout", "额度探测超时"],
+  ["probe_network_error", "额度探测网络错误"],
+  ["probe_auth_rejected", "额度探测认证被拒"],
+  ["probe_rate_limited", "额度探测被限流"],
+  ["probe_http_error", "额度探测请求失败"],
+  ["probe_headers_missing", "探测响应缺少额度头"],
+  ["probe_headers_invalid", "探测响应额度头无效"],
+]);
+
 const countFormatter = new Intl.NumberFormat("zh-CN");
 const compactFormatter = new Intl.NumberFormat("zh-CN", { notation: "compact", maximumFractionDigits: 1 });
 const decimalFormatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
@@ -358,11 +392,25 @@ function healthCard(provider, bridge, subscription) {
     if (!renderedQuota) renderedQuota = quotaWindow(card, "配额", quota);
   }
   if (account.logged_in !== false && quota.stale === true) node(card, "p", "notice notice-warning", "额度数据较旧，请以官方账户页面为准。");
+  const quotaReasonLabel = account.logged_in !== false ? quotaReasonLabels.get(quota.reason) : null;
+  if (account.logged_in !== false) {
+    const quotaNotes = [];
+    const sourceLabel = quotaSourceLabels.get(quota.source);
+    if (sourceLabel) quotaNotes.push(`来源：${sourceLabel}`);
+    if (typeof quota.observed_at === "string" && quota.observed_at) {
+      const age = isNumber(quota.age_seconds) ? ` · ${duration(quota.age_seconds * 1000)}前` : "";
+      quotaNotes.push(`观测时间：${timeLabel(quota.observed_at)}${age}`);
+    }
+    if (quotaNotes.length) node(card, "p", "metric-secondary", quotaNotes.join(" · "));
+    if (quotaReasonLabel) {
+      node(card, "p", quota.available === true ? "metric-secondary" : "notice notice-warning", `额度状态：${quotaReasonLabel}`);
+    }
+  }
   if (account.logged_in === false) {
     node(card, "p", "token-empty", "远端尚未登录，额度当前未知。请在服务器完成登录后刷新。");
-  } else if (provider === "claude" && !renderedQuota) {
+  } else if (provider === "claude" && !renderedQuota && !quotaReasonLabel) {
     node(card, "p", "token-empty", "暂未取得 Claude 额度，请等待远端登录或下一次监测更新。");
-  } else if (provider === "gemini" && !renderedQuota) {
+  } else if (provider === "gemini" && !renderedQuota && !quotaReasonLabel) {
     node(card, "p", "token-empty", "暂未取得 Gemini 额度，请等待下一次监测更新。");
   }
 

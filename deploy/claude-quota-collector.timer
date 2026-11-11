@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh authorized Claude quota cache no more than every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=10s
+AccuracySec=1s
+Unit=claude-quota-collector.service
+
+[Install]
+WantedBy=timers.target

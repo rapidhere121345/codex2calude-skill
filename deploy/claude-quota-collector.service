@@ -1,0 +1,30 @@
+[Unit]
+Description=Authorized one-token Haiku quota header collection
+After=network-online.target
+Wants=network-online.target
+OnSuccess=mcp-audit-health.service
+OnFailure=mcp-audit-health.service
+
+[Service]
+Type=oneshot
+User=claudemcp
+Group=claudemcp
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONNOUSERSITE=1
+ExecStart=/opt/remote-research-mcp/current/.venv/bin/python -m claude_research_mcp.quota_probe
+TimeoutStartSec=30
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/claude-mcp/research/state
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+MemoryMax=128M

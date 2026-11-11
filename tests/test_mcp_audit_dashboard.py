@@ -268,6 +268,71 @@ def test_unified_health_reader_preserves_public_models_and_hides_logged_out_cach
     assert "SECRET" not in json.dumps(bridges)
 
 
+def test_health_snapshot_preserves_probe_quota_and_rejects_unknown_values(tmp_path):
+    from claude_research_mcp import quota_probe
+    path = tmp_path / "health.json"
+    timestamp = NOW.isoformat()
+    reasons = sorted(quota_probe.REASONS)
+    payload = {
+        "observed_at": timestamp,
+        "bridges": {
+            "claude": {
+                "probe_ok": True,
+                "account": {
+                    "logged_in": True,
+                    "quota": {
+                        "available": False,
+                        "source": "anthropic_rate_limit_headers",
+                        "reason": reasons[0],
+                        "observed_at": timestamp,
+                        "age_seconds": 42,
+                        "stale": True,
+                        "manual_check_url": "https://claude.ai/usage",
+                        "access_token": "SECRET",
+                    },
+                },
+            },
+            "gemini": {
+                "probe_ok": True,
+                "account": {
+                    "logged_in": True,
+                    "quota": {
+                        "available": True,
+                        "source": "SECRET_SOURCE",
+                        "reason": "SECRET_REASON",
+                        "five_hour": {
+                            "used_percent": 20, "remaining_percent": 80,
+                            "resets_at": timestamp, "raw": "SECRET",
+                        },
+                    },
+                },
+            },
+        },
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    bridges = read_health_snapshot(path, now=NOW)["bridges"]
+    claude_quota = bridges["claude"]["account"]["quota"]
+    assert claude_quota["source"] == "anthropic_rate_limit_headers"
+    assert claude_quota["reason"] == reasons[0]
+    assert claude_quota["observed_at"] == timestamp
+    assert claude_quota["age_seconds"] == 42
+    assert claude_quota["stale"] is True
+    gemini_quota = bridges["gemini"]["account"]["quota"]
+    assert "source" not in gemini_quota
+    assert "reason" not in gemini_quota
+    assert gemini_quota["five_hour"] == {
+        "used_percent": 20, "remaining_percent": 80, "resets_at": timestamp,
+    }
+    assert "SECRET" not in json.dumps(bridges)
+
+    for reason in reasons[1:]:
+        payload["bridges"]["claude"]["account"]["quota"]["reason"] = reason
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        quota = read_health_snapshot(path, now=NOW)["bridges"]["claude"]["account"]["quota"]
+        assert quota["reason"] == reason
+        assert quota["source"] == "anthropic_rate_limit_headers"
+
+
 def test_health_snapshot_age_is_unknown_without_timestamp(tmp_path):
     path = tmp_path / "health.json"
     path.write_text("{}", encoding="utf-8")
@@ -575,6 +640,96 @@ assert.equal(
   texts(runtime).filter(value => value.includes("旧入口 worker（不含统一网关）")).length,
   2
 );
+"""
+    static = Path(__file__).parents[1] / "src/mcp_audit_dashboard/static/app.js"
+    subprocess.run(["node", "-e", script, str(static)], check=True, capture_output=True, text=True)
+
+
+def test_quota_card_shows_probe_source_reason_and_observation_without_secrets():
+    script = r"""
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const vm = require("node:vm");
+class Element {
+  constructor(tag) { this.tag = tag; this.textContent = ""; this.children = []; }
+  get firstChild() { return this.children[0] || null; }
+  appendChild(child) { this.children.push(child); return child; }
+  removeChild(child) { this.children.splice(this.children.indexOf(child), 1); }
+  setAttribute(name, value) { this[name] = value; }
+  addEventListener() {}
+}
+const ids = new Map();
+const document = {
+  getElementById(id) {
+    if (!ids.has(id)) ids.set(id, new Element(id));
+    return ids.get(id);
+  },
+  createElement(tag) { return new Element(tag); },
+};
+const source = fs.readFileSync(process.argv[1], "utf8").replace(
+  /await loadDashboard\(\);\s*$/, ""
+);
+const context = { document };
+vm.runInNewContext(
+  source + "\nglobalThis.healthTest = { healthCard };",
+  context
+);
+const { healthCard } = context.healthTest;
+const health = document.getElementById("health-grid");
+function texts(element) {
+  return [element.textContent, ...element.children.flatMap(texts)].filter(Boolean);
+}
+const observed = new Date(Date.now() - 400000).toISOString();
+healthCard("claude", {
+  probe_ok: true,
+  account_ready: true,
+  transport: { probe_kind: "local_unified_forced_command" },
+  account: { logged_in: true, quota: {
+    available: true, stale: true, source: "anthropic_rate_limit_headers",
+    observed_at: observed, age_seconds: 400, reason: "probe_rate_limited",
+    access_token: "SECRET", raw_headers: "SECRET",
+    five_hour: { used_percent: 20, remaining_percent: 80,
+                 resets_at: new Date(Date.now() + 7200000).toISOString() },
+  } },
+}, null);
+let output = texts(health.children[0]);
+assert.ok(output.includes("5 小时窗口"));
+assert.ok(output.some(value => value.includes("20%")));
+assert.ok(output.includes("额度数据较旧，请以官方账户页面为准。"));
+assert.ok(output.some(value => value.includes("Haiku 探测响应头（最多输出 1 个 token）")));
+assert.ok(output.some(value => value.includes("观测时间：")));
+assert.ok(output.includes("额度状态：额度探测被限流"));
+assert.ok(!output.some(value => value.includes("SECRET")));
+assert.ok(!output.some(value => value.includes("access_token")));
+assert.ok(!output.some(value => value.includes("raw_headers")));
+
+healthCard("claude", {
+  probe_ok: true,
+  account_ready: true,
+  transport: { probe_kind: "local_unified_forced_command" },
+  account: { logged_in: true, quota: {
+    available: false, source: "anthropic_rate_limit_headers",
+    reason: "oauth_expired", observed_at: observed, age_seconds: 400,
+  } },
+}, null);
+output = texts(health.children[1]);
+assert.ok(output.includes("额度状态：远端凭据已过期"));
+assert.ok(output.some(value => value.includes("Haiku 探测响应头")));
+assert.ok(!output.some(value => value.includes("暂未取得 Claude 额度")));
+assert.ok(!output.some(value => value.includes("SECRET")));
+
+healthCard("claude", {
+  probe_ok: true,
+  account_ready: true,
+  transport: { probe_kind: "local_unified_forced_command" },
+  account: { logged_in: true, quota: {
+    available: false, source: "unlisted_source", reason: "SECRET_REASON",
+  } },
+}, null);
+output = texts(health.children[2]);
+assert.ok(output.includes("暂未取得 Claude 额度，请等待远端登录或下一次监测更新。"));
+assert.ok(!output.some(value => value.includes("SECRET_REASON")));
+assert.ok(!output.some(value => value.includes("unlisted_source")));
 """
     static = Path(__file__).parents[1] / "src/mcp_audit_dashboard/static/app.js"
     subprocess.run(["node", "-e", script, str(static)], check=True, capture_output=True, text=True)

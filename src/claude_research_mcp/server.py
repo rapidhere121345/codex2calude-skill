@@ -58,6 +58,12 @@ from .persistence import (
     recorded_token_usage,
     reserve_call,
 )
+from .quota_probe import (
+    CACHE_FILENAME,
+    MANUAL_CHECK_URL,
+    SOURCE,
+    read_quota_cache,
+)
 from .usage import (
     get_cached_usage_command_status,
     get_opus_quota_status,
@@ -700,13 +706,16 @@ def create_app(settings: Settings) -> FastMCP:
             else:
                 try:
                     result["opus_quota"] = await asyncio.to_thread(
-                        get_opus_quota_status,
-                        settings.work_root / "state" / "statusline-observation.json",
+                        read_quota_cache,
+                        settings.work_root / "state" / CACHE_FILENAME,
                     )
-                    if not result["opus_quota"].get("available"):
-                        result["opus_quota"] = await _run_usage_probe(settings)
                 except Exception:
-                    result["opus_quota"] = usage_command_unavailable()
+                    result["opus_quota"] = {
+                        "available": False,
+                        "source": SOURCE,
+                        "reason": "quota_cache_invalid",
+                        "manual_check_url": MANUAL_CHECK_URL,
+                    }
             finish_call(
                 settings.database_path,
                 audit,

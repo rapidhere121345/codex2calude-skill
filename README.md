@@ -109,6 +109,19 @@ Transport verification is separate from provider login and model inference
 acceptance. Do not interpret missing observations as zero usage or unlimited
 quota.
 
+Claude quota lookup is cache-only: it reads a sanitized on-VPS observation
+and never runs an inference probe or reads OAuth credentials — normal CLI
+login checks are separate. An independently authorized collector may send one
+fixed one-output-token Haiku request at most once every five minutes per
+shared account; it consumes real inference quota and shares the account-wide
+rate limit with research calls. The collector does not refresh OAuth: expired
+credentials keep reporting unavailable until the native login lifecycle
+refreshes them. Status reports only the cached observation, its age,
+staleness, and sanitized failure reason; credentials remain on the VPS and
+are never copied to clients. A stale, failed, expired or missing observation
+stays distinct from a fresh value, and the probe is quota telemetry only: it
+is not actual-model verification and not a research fallback.
+
 ## Development
 
 The server uses Python 3.12 and the repository's MCP dependencies. Client

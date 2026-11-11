@@ -31,7 +31,10 @@ _PUBLIC_MODELS = frozenset(
 )
 _EFFORTS = frozenset(("low", "medium", "high", "xhigh", "max"))
 _QUOTA_SOURCES = frozenset(
-    ("claude_code_statusline", "claude_code_usage_command", "antigravity_cli_usage")
+    (
+        "claude_code_statusline", "claude_code_usage_command", "antigravity_cli_usage",
+        "anthropic_rate_limit_headers",
+    )
 )
 _QUOTA_REASONS = frozenset(
     (
@@ -39,6 +42,12 @@ _QUOTA_REASONS = frozenset(
         "statusline_observation_expired", "invalid_statusline_observation",
         "usage_command_unavailable", "usage_command_failed",
         "invalid_usage_command_output", "not_reported_by_agy",
+        "quota_cache_unavailable", "quota_cache_invalid", "quota_cache_expired",
+        "quota_windows_expired", "quota_observation_unavailable",
+        "oauth_unavailable", "oauth_invalid", "oauth_expired",
+        "probe_result_unknown", "probe_timeout", "probe_network_error",
+        "probe_auth_rejected", "probe_rate_limited", "probe_http_error",
+        "probe_headers_missing", "probe_headers_invalid",
     )
 )
 _PROVIDER_ERRORS = frozenset(

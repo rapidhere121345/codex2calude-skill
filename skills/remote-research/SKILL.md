@@ -100,6 +100,17 @@ turn. Do not call it before every research request.
 - Local authentication status does not prove model inference availability.
 - Unknown or stale quota is not zero usage, unlimited quota, or a fresh value.
 - Preserve reported observation time, source and reset times.
+- Claude quota lookup is cache-only: it reads a sanitized observation and never
+  runs an inference probe or reads OAuth credentials. Normal CLI login checks
+  are separate. An independently authorized on-VPS collector may send one
+  fixed one-output-token Haiku request at most once every five minutes per
+  shared account; it consumes real inference quota.
+- Preserve quota age and failure reason. Stale, failed, expired and missing
+  observations are not fresh values. The collector does not refresh OAuth;
+  expired credentials remain unavailable until the native login lifecycle
+  refreshes them. Never copy credentials to a client or VM.
+- The quota probe is telemetry only: it is not actual-model verification and
+  not a research fallback.
 - Claude's official manual quota page is `https://claude.ai/usage`.
 - Login, OAuth credentials and real provider CLI operations stay on the VPS.
   Never copy them to a partner or switch to API-key/Vertex billing as a fix.

@@ -95,8 +95,15 @@ def sanitize_account(status, provider=None):
             'statusline_observation_expired', 'invalid_statusline_observation',
             'usage_command_unavailable', 'usage_command_failed',
             'invalid_usage_command_output', 'not_reported_by_agy',
+            'quota_cache_unavailable', 'quota_cache_invalid', 'quota_cache_expired',
+            'quota_windows_expired', 'quota_observation_unavailable',
+            'oauth_unavailable', 'oauth_invalid', 'oauth_expired',
+            'probe_result_unknown', 'probe_timeout', 'probe_network_error',
+            'probe_auth_rejected', 'probe_rate_limited', 'probe_http_error',
+            'probe_headers_missing', 'probe_headers_invalid',
         }
-        sources = {'claude_code_statusline', 'claude_code_usage_command', 'antigravity_cli_usage'}
+        sources = {'claude_code_statusline', 'claude_code_usage_command', 'antigravity_cli_usage',
+                   'anthropic_rate_limit_headers'}
         if isinstance(value.get('reason'), str) and value['reason'] in reasons:
             quota['reason'] = value['reason']
         elif not quota['available']:

@@ -58,6 +58,17 @@ Gemini's quota uses its existing `quota`. A failed provider must not suppress
 another provider's status. Authentication and actual inference availability are
 distinct. Never turn missing quota observations into zero or unlimited usage.
 
+Claude quota lookup is cache-only: it reads a sanitized observation file and
+performs no inference probe or OAuth credential access; normal CLI login
+checks are separate. An independently authorized on-VPS collector may send
+one fixed one-output-token Haiku request at most once every five minutes per
+shared account to refresh rate-limit header observations; it consumes real
+inference quota. The collector does not refresh OAuth, so expired credentials
+remain unavailable until the native login lifecycle refreshes them. Stale,
+failed, expired, and unavailable observations remain distinct sanitized
+reasons. The probe is quota telemetry, not actual-model verification or a
+research fallback, and credentials never leave the VPS.
+
 ### Evidence Levels
 
 Each root-owned catalog model has an `evidence_policy`. Its default is

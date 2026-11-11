@@ -673,18 +673,16 @@ def test_no_hourly_bridge_quota_setting_or_twenty_call_limit(tmp_path):
     assert rows == [("claude_once", "success")] * 25
 
 
-def test_status_and_fable_version_gate(tmp_path, monkeypatch):
+def test_status_and_fable_version_gate(tmp_path):
     settings = make_settings(
         tmp_path,
         CLAUDE_MCP_MODELS='{"opus":{"cli_value":"opus","family":"opus"},"fable":{"cli_value":"fable","family":"fable","min_cli_version":"2.1.257"}}',
     )
     fake_claude(settings.claude_bin)
-    async def unavailable_probe(_settings):
-        return server_module.usage_command_unavailable()
-
-    monkeypatch.setattr(server_module, "_run_usage_probe", unavailable_probe)
     status = asyncio.run(get_tool(create_app(settings), "claude_status")())
     assert status["claude_version"] == "2.1.236"
+    assert status["opus_quota"]["source"] == "anthropic_rate_limit_headers"
+    assert status["opus_quota"]["reason"] == "quota_cache_unavailable"
     assert status["logged_in"] is True
     assert status["auth_method"] == "claude.ai"
     assert status["subscription_type"] == "pro"
@@ -697,52 +695,52 @@ def test_status_and_fable_version_gate(tmp_path, monkeypatch):
     }
 
 
-def test_status_includes_official_quota_observation_without_leaking_identity(
+def test_status_includes_cached_quota_observation_without_leaking_identity(
     tmp_path, monkeypatch
 ):
     settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin)
-    monkeypatch.setattr(
-        server_module,
-        "run_usage_command",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("secret probe failure")),
-    )
+    state = settings.work_root / "state"
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+
     unavailable = asyncio.run(get_tool(create_app(settings), "claude_status")())
     assert unavailable["opus_quota"] == {
         "available": False,
-        "source": "claude_code_usage_command",
-        "reason": "usage_command_unavailable",
+        "source": "anthropic_rate_limit_headers",
+        "reason": "quota_cache_unavailable",
         "manual_check_url": "https://claude.ai/usage",
     }
 
-    sample = {
-        "available": True,
-        "source": "claude_code_statusline",
-        "observed_at": "2026-09-12T00:00:00+00:00",
-        "stale": False,
-        "age_seconds": 0,
-        "five_hour": {
-            "used_percent": 20.0,
-            "remaining_percent": 80.0,
-            "resets_at": "2026-09-12T05:00:00+00:00",
-        },
-        "seven_day": {
-            "used_percent": 30.0,
-            "remaining_percent": 70.0,
-            "resets_at": "2026-09-16T00:00:00+00:00",
+    now = datetime.now(timezone.utc)
+    cache = {
+        "schema_version": 1,
+        "source": "anthropic_rate_limit_headers",
+        "probe_model": "claude-haiku-4-5-20251001",
+        "last_attempt_at": now.isoformat(timespec="seconds"),
+        "last_attempt_status": "ok",
+        "observed_at": now.isoformat(timespec="seconds"),
+        "windows": {
+            "five_hour": {
+                "utilization": 0.2,
+                "resets_at": int((now + timedelta(hours=2)).timestamp()),
+            },
+            "seven_day": {
+                "utilization": 0.3,
+                "resets_at": int((now + timedelta(days=2)).timestamp()),
+            },
         },
     }
-    monkeypatch.setattr(
-        server_module,
-        "get_opus_quota_status",
-        lambda path: {
-            **sample,
-        },
-    )
+    cache_path = state / "haiku-quota-observation.json"
+    cache_path.write_text(json.dumps(cache))
+    cache_path.chmod(0o600)
+
     app = create_app(settings)
     assert [tool.name for tool in asyncio.run(app.list_tools())] == TOOLS
     status = asyncio.run(get_tool(app, "claude_status")())
+    assert status["opus_quota"]["available"] is True
+    assert status["opus_quota"]["source"] == "anthropic_rate_limit_headers"
     assert status["opus_quota"]["five_hour"]["used_percent"] == 20.0
+    assert status["opus_quota"]["seven_day"]["used_percent"] == 30.0
     rendered = json.dumps(status)
     assert "secret@example.com" not in rendered
     assert "secret-org" not in rendered
@@ -753,13 +751,17 @@ def test_status_includes_official_quota_observation_without_leaking_identity(
 
     monkeypatch.setattr(
         server_module,
-        "get_opus_quota_status",
+        "read_quota_cache",
         lambda path: (_ for _ in ()).throw(RuntimeError("secret token")),
     )
     surviving = asyncio.run(get_tool(app, "claude_status")())
     assert surviving["status"] == "ok"
-    assert surviving["opus_quota"]["available"] is False
-    assert surviving["opus_quota"]["manual_check_url"] == "https://claude.ai/usage"
+    assert surviving["opus_quota"] == {
+        "available": False,
+        "source": "anthropic_rate_limit_headers",
+        "reason": "quota_cache_invalid",
+        "manual_check_url": "https://claude.ai/usage",
+    }
 
 
 def test_status_does_not_report_quota_for_missing_login(tmp_path, monkeypatch):
@@ -767,7 +769,7 @@ def test_status_does_not_report_quota_for_missing_login(tmp_path, monkeypatch):
     fake_claude(settings.claude_bin, logged_in=False)
     monkeypatch.setattr(
         server_module,
-        "get_opus_quota_status",
+        "read_quota_cache",
         lambda path: pytest.fail("quota status requires a Claude login"),
     )
 
@@ -803,13 +805,14 @@ def test_status_missing_login_is_success_without_cached_quota_or_probe(
     )
     monkeypatch.setattr(
         server_module,
-        "get_opus_quota_status",
+        "read_quota_cache",
         lambda path: pytest.fail("unauthenticated status must not read cached quota"),
     )
-    async def forbidden_probe(_settings):
-        pytest.fail("unauthenticated status must not invoke /usage")
-
-    monkeypatch.setattr(server_module, "_run_usage_probe", forbidden_probe)
+    monkeypatch.setattr(
+        server_module,
+        "run_usage_command",
+        lambda *args, **kwargs: pytest.fail("unauthenticated status must not run /usage"),
+    )
 
     status = asyncio.run(get_tool(create_app(settings), "claude_status")())
 
@@ -865,8 +868,12 @@ def test_status_rejects_nonzero_without_exact_logged_out_payload(
 def test_authenticated_status_exit_zero_preserves_quota_source(tmp_path, monkeypatch):
     settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin, auth_exit_code=0)
-    sample = {"available": True, "source": "claude_code_statusline", "five_hour": {"used_percent": 23}}
-    monkeypatch.setattr(server_module, "get_opus_quota_status", lambda path: sample)
+    sample = {
+        "available": True,
+        "source": "anthropic_rate_limit_headers",
+        "five_hour": {"used_percent": 23},
+    }
+    monkeypatch.setattr(server_module, "read_quota_cache", lambda path: sample)
 
     status = asyncio.run(get_tool(create_app(settings), "claude_status")())
 
@@ -933,54 +940,55 @@ def test_accepted_exit_code_does_not_relax_inference_or_safety_bounds(tmp_path):
     asyncio.run(asyncio.wait_for(cancel_running_command(), timeout=5))
 
 
-def test_status_uses_official_usage_fallback_and_shared_cache(
+def test_status_reads_quota_cache_only_and_never_runs_usage_probe(
     tmp_path, monkeypatch
 ):
     settings = make_settings(tmp_path)
     fake_claude(settings.claude_bin)
     state = settings.work_root / "state"
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
-    state.chmod(0o700)
     now = datetime.now(timezone.utc)
-    five_reset = now + timedelta(hours=2)
-    seven_reset = now + timedelta(days=2)
-    months = (
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    )
+    cache = {
+        "schema_version": 1,
+        "source": "anthropic_rate_limit_headers",
+        "probe_model": "claude-haiku-4-5-20251001",
+        "last_attempt_at": now.isoformat(timespec="seconds"),
+        "last_attempt_status": "ok",
+        "observed_at": now.isoformat(timespec="seconds"),
+        "windows": {
+            "five_hour": {
+                "utilization": 0.6,
+                "resets_at": int((now + timedelta(hours=2)).timestamp()),
+            },
+            "seven_day": {
+                "utilization": 0.12,
+                "resets_at": int((now + timedelta(days=2)).timestamp()),
+            },
+        },
+    }
+    cache_path = state / "haiku-quota-observation.json"
+    cache_path.write_text(json.dumps(cache))
+    cache_path.chmod(0o600)
 
-    def clock(value):
-        return value.strftime("%I:%M%p").lstrip("0").lower()
+    usage_calls = []
 
-    screen = (
-        "Current session 60% used Resets "
-        f"{clock(five_reset)} (UTC) "
-        "Current week (all models) 12% used Resets "
-        f"{months[seven_reset.month - 1]} {seven_reset.day}, "
-        f"{clock(seven_reset)} (UTC) secret@example.com"
-    )
-    calls = 0
+    def forbidden_usage(*args, **kwargs):
+        usage_calls.append(args)
+        raise AssertionError("claude_status must not run the /usage probe")
 
-    async def official_usage(_claude_bin, *, cwd):
-        nonlocal calls
-        calls += 1
-        assert cwd == settings.principal_work_dir
-        return screen
-
-    monkeypatch.setattr(server_module, "run_usage_command", official_usage)
+    monkeypatch.setattr(server_module, "run_usage_command", forbidden_usage)
     status_tool = get_tool(create_app(settings), "claude_status")
 
     first = asyncio.run(status_tool())
     second = asyncio.run(status_tool())
 
-    assert calls == 1
-    assert first["opus_quota"]["source"] == "claude_code_usage_command"
+    assert usage_calls == []
+    assert first["opus_quota"]["source"] == "anthropic_rate_limit_headers"
     assert first["opus_quota"]["five_hour"]["used_percent"] == 60.0
     assert first["opus_quota"]["seven_day"]["used_percent"] == 12.0
-    assert second["opus_quota"]["age_seconds"] >= 0
+    assert second["opus_quota"]["five_hour"]["used_percent"] == 60.0
+    assert second["opus_quota"]["age_seconds"] >= first["opus_quota"]["age_seconds"]
     assert "secret@example.com" not in json.dumps(first)
-    cache = state / "usage-command-observation.json"
-    assert "secret@example.com" not in cache.read_text(encoding="ascii")
 
 
 def test_model_family_absence_is_rejected_not_silently_ignored():

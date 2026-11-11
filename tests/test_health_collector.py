@@ -21,6 +21,50 @@ def test_missing_quota_stays_unknown():
     assert collector.safe_quota(None)=={'available':False,'reason':'unknown'}
 
 
+def test_quota_probe_source_and_every_reason_survive_sanitization():
+    from claude_research_mcp import quota_probe
+    for reason in sorted(quota_probe.REASONS):
+        account=collector.sanitize_account({'status':'ok','logged_in':True,'quota':{
+            'available':False,'source':'anthropic_rate_limit_headers','reason':reason,
+            'observed_at':'2026-11-11T03:00:00+00:00','age_seconds':42,'stale':True,
+            'manual_check_url':'https://claude.ai/usage','access_token':'SECRET'}},'claude')
+        quota=account['quota']
+        assert quota['available'] is False
+        assert quota['source']=='anthropic_rate_limit_headers'
+        assert quota['reason']==reason
+        assert quota['age_seconds']==42
+        assert quota['stale'] is True
+        assert 'SECRET' not in json.dumps(account)
+
+
+def test_quota_probe_windows_and_metadata_survive_sanitization():
+    account=collector.sanitize_account({'status':'ok','logged_in':True,'quota':{
+        'available':True,'source':'anthropic_rate_limit_headers','reason':'probe_timeout',
+        'observed_at':'2026-11-11T03:00:00+00:00','age_seconds':100,'stale':True,
+        'five_hour':{'used_percent':20,'remaining_percent':80,
+                     'resets_at':'2026-11-11T05:00:00+00:00','raw':'SECRET'},
+        'seven_day':{'used_percent':10,'remaining_percent':90,
+                     'resets_at':'2026-11-18T03:00:00+00:00'},
+        'authorization':'Bearer SECRET'}},'claude')
+    quota=account['quota']
+    assert quota['available'] is True
+    assert quota['source']=='anthropic_rate_limit_headers'
+    assert quota['reason']=='probe_timeout'
+    assert quota['stale'] is True
+    assert quota['five_hour']=={'used_percent':20,'remaining_percent':80,
+                               'resets_at':'2026-11-11T05:00:00+00:00'}
+    assert quota['seven_day']['used_percent']==10
+    assert 'SECRET' not in json.dumps(account)
+
+
+def test_quota_unknown_source_and_reason_are_rejected():
+    account=collector.sanitize_account({'status':'ok','logged_in':True,'quota':{
+        'available':False,'source':'SECRET_SOURCE','reason':'SECRET_REASON',
+        'token':'SECRET'}},'claude')
+    assert account['quota']=={'available':False,'reason':'unknown'}
+    assert 'SECRET' not in json.dumps(account)
+
+
 def test_snapshot_contains_only_audit_metadata_and_known_tokens(tmp_path, monkeypatch):
     import sqlite3
     source=tmp_path/'source.sqlite3'
